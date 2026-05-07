@@ -1,0 +1,9 @@
+# Terraform: repository에서 아예 제외
+terraform/
+
+# Terraform cache/state files
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
