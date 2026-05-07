@@ -18,7 +18,32 @@ spec:
         - name: backend
           image: <BACKEND_IMAGE_PLACEHOLDER>
           env:
+            # ConfigMap에서 가져올 환경 변수
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: LOG_LEVEL
+            - name: AI_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: AI_BASE_URL
+            # Secret에서 가져올 민감한 정보
             - name: DATABASE_URL
-              value: "<REPLACE_WITH_DB_URL>"
+              valueFrom:
+                secretKeyRef:
+                  name: db-credentials
+                  key: DATABASE_URL
+            - name: DB_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: db-credentials
+                  key: DB_USERNAME
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-credentials
+                  key: DB_PASSWORD
           ports:
             - containerPort: 3000

@@ -1,501 +1,474 @@
-# 인프라 실행 가이드
+# 의료 서비스 인프라 기술 가이드
 
-이 문서는 AWS 계정을 아직 받지 못한 상태에서 시작해, 계정을 받은 뒤 무엇부터 해야 하는지, GitHub Actions로 이미지를 ECR에 올리고, Terraform으로 EKS와 Aurora(MySQL Compatible)를 만들고, Argo CD로 배포하기까지의 전 과정을 한 파일로 정리한 실행 매뉴얼입니다.
+## 목차
 
-이 문서만 따라가면 아래 흐름으로 진행할 수 있게 작성했습니다.
+1. [아키텍처 개요](#아키텍처-개요)
+2. [프로젝트 구조](#프로젝트-구조)
+3. [Terraform 상세 가이드](#terraform-상세-가이드)
+4. [GitHub Actions CI/CD](#github-actionscici-d)
+5. [Kubernetes & ArgoCD](#kubernetes--argocd)
+6. [환경 변수 및 설정 관리](#환경-변수-및-설정-관리)
+7. [로컬 개발 환경](#로컬-개발-환경)
+8. [수동 이미지 업데이트 절차](#수동-이미지-업데이트-절차)
+9. [모니터링 및 로깅](#모니터링-및-로깅)
+10. [보안 체크리스트](#보안-체크리스트)
+11. [트러블슈팅](#트러블슈팅)
 
-1. 로컬 개발 환경 준비
-2. GitHub 레포 4개 생성
-3. AWS 계정 수령 후 IAM/CLI 설정
-4. Terraform state backend(S3 + DynamoDB) 생성
-5. Terraform 1차 실행으로 ECR/VPC/Aurora 생성, 2차 실행으로 EKS 생성
-6. GitHub Secrets 등록 후 프론트/백/AI CI 활성화
-7. Argo CD 설치 전 클러스터/노드 상태 확인
-8. Argo CD 설치 및 `application.yaml` 연결
-9. k8s 매니페스트의 이미지 태그 갱신 후 Argo CD로 배포
+---
 
-## 0. 최종 목표 구조
+## 아키텍처 개요
 
-- `frontend-medicare`: 프론트엔드 코드, Dockerfile, GitHub Actions
-- `backend-medicare`: 백엔드 코드, Dockerfile, GitHub Actions
-- `ai-medicare`: FastAPI + scikit-learn AI 탐지 서비스, Dockerfile, GitHub Actions
-- `infra-medicare`: Terraform, k8s 매니페스트, Argo CD 설정
+### 전체 시스템 다이어그램
 
-## 1. AWS 계정 받기 전 미리 준비할 것
-
-AWS 계정이 없어도 아래 작업은 먼저 할 수 있습니다.
-
-### 1-1. 로컬 도구 설치
-
-- `Docker`
-- `AWS CLI`
-- `Terraform`
-- `kubectl`
-- `Helm`
-
-설치 확인 예시:
-
-```bash
-docker --version
-aws --version
-terraform -version
-kubectl version --client
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         GitHub (Git & Actions)                      │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────┐ ┌─────────────┐    │
+│  │  frontend    │ │   backend    │ │ ai-model │ │ infra (IaC) │    │
+│  │  (React)     │ │  (Spring)    │ │(FastAPI) │ │ (Terraform) │    │
+│  └──────┬───────┘ └──────┬───────┘ └────┬─────┘ └──────┬──────┘    │
+│         │                │              │               │           │
+│         └─── GitHub Actions CI/CD (자동 빌드/테스트) ────┘           │
+└─────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+                        ┌─────────────────────┐
+                        │   AWS (ap-ne-2)     │
+                        ├─────────────────────┤
+                        │  ┌───────────────┐  │
+                        │  │   ECR (이미지) │  │ ◄── CI에서 푸시
+                        │  └───────┬───────┘  │
+                        │          │          │
+                        │    ┌─────▼──────┐   │
+                        │    │ EKS Cluster│   │ ◄── GitOps (ArgoCD)
+                        │    │ ┌────────┐ │   │
+                        │    │ │ Pods   │ │   │
+                        │    │ └────────┘ │   │
+                        │    └──────┬─────┘   │
+                        │           │         │
+                        │    ┌──────▼──────┐  │
+                        │    │ Aurora MySQL│  │
+                        │    │ RDS Cluster │  │
+                        │    └─────────────┘  │
+                        └─────────────────────┘
 ```
 
-### 1-2. GitHub 레포 이름 확정
+### 주요 특징
 
-아래 4개 레포를 만든다고 가정합니다.
+- **멀티 레포**: 각 서비스별 독립적인 Git 레포 → 팀 간 자율성
+- **IaC (Infrastructure as Code)**: Terraform으로 모든 AWS 리소스 관리
+- **GitOps**: ArgoCD가 Git 상태를 감시하고 클러스터 자동 동기화
+- **자동 배포**: 코드 푸시 → CI 빌드 → ECR 푸시 → (수동 이미지 태그 업데이트) → ArgoCD 감지 → 배포
+- **이미지 수동 업데이트**: 개발자가 `kustomization.yaml`에서 이미지 태그 관리 (ARGOCD_GIT_TOKEN 불필요, 간단하고 안전)
 
-- `frontend-medicare`
-- `backend-medicare`
-- `ai-medicare`
-- `infra-medicare`
+---
 
-### 1-3. 각 레포 기본 구조 준비
+## 프로젝트 구조
 
-프론트 레포 예시:
+### 로컬 폴더 구조
 
-```text
+```
+medical-service-infra/
+├── DEPLOY.md                 # ← Phase별 배포 단계별 가이드
+├── terraform/
+│   ├── provider.tf          # AWS 프로바이더 & backend 주석
+│   ├── backend.tf           # 상태 파일 backend 설명
+│   ├── versions.tf          # Terraform 버전 요구사항
+│   ├── variables.tf         # 변수 정의
+│   ├── vpc.tf               # VPC, 서브넷, IGW, NAT GW
+│   ├── eks.tf               # EKS 클러스터, 노드 그룹, IAM
+│   ├── rds.tf               # Aurora MySQL
+│   ├── ecr.tf               # ECR 리포지토리
+│   ├── outputs.tf           # 출력값
+│   ├── terraform.tfvars.example  # 변수값 예시
+│   └── terraform.tfvars     # 변수값 (로컬, Git 제외)
+│
+├── k8s/
+│   ├── base/                # Kubernetes 기본 매니페스트
+│   │   ├── namespace.yaml
+│   │   ├── frontend-deployment.yaml
+│   │   ├── backend-deployment.yaml
+│   │   ├── ai-deployment.yaml
+│   │   ├── *-service.yaml
+│   │   └── kustomization.yaml
+│   │
+│   └── overlays/
+│       └── prod/            # 프로덕션 오버레이
+│           └── kustomization.yaml  # ← 이 파일에서 이미지 태그 관리
+│
+├── argocd/
+│   └── application.yaml     # ArgoCD Application
+│
+└── md/
+    └── infra_guide.md       # ← 이 파일
+```
+
+### 4개 GitHub 레포 구조
+
+#### 1. `frontend-medicare`
+```
 frontend-medicare/
-  src/
-  public/
-  package.json
-  Dockerfile
-  nginx.conf
-  .github/workflows/frontend-ci-cd.yml
+├── Dockerfile
+├── nginx.conf
+├── package.json
+├── .github/workflows/
+│   └── ci-cd.yml
+├── src/
+└── public/
 ```
 
-백엔드 레포 예시:
-
-```text
+#### 2. `backend-medicare`
+```
 backend-medicare/
-  src/
-  package.json
-  Dockerfile
-  .github/workflows/backend-ci-cd.yml
+├── Dockerfile
+├── pom.xml (또는 build.gradle)
+├── .github/workflows/
+│   └── ci-cd.yml
+├── src/main/java/
+└── src/main/resources/
 ```
 
-인프라 레포 예시:
-
-```text
-infra-medicare/
-  terraform/
-  k8s/
-    base/
-    overlays/
-  argocd/
-  .github/workflows/
+#### 3. `ai-medicare`
 ```
-
-AI 레포 예시:
-
-```text
 ai-medicare/
-  app/
-  models/
-  Dockerfile
-  requirements.txt
-  .github/workflows/ai-ci-cd.yml
+├── Dockerfile
+├── requirements.txt
+├── .github/workflows/
+│   └── ci-cd.yml
+├── app/
+│   └── main.py
+└── tests/
 ```
 
-### 1-4. 로컬 Docker 실행 확인
+#### 4. `infra-medicare` (이 폴더)
+- Terraform 파일들
+- k8s 매니페스트 (base & overlays)
+- ArgoCD 설정
 
-```bash
-docker compose up --build
-docker build -t medical-frontend:local .
-docker run -p 8080:80 medical-frontend:local
-docker build -t medical-backend:local .
-docker run -p 3000:3000 medical-backend:local
-```
+---
 
-## 2. AWS 계정을 받으면 가장 먼저 할 일
+## Terraform 상세 가이드
 
-AWS 계정을 받는 순간부터는 아래 순서로 진행합니다.
+### 1. 파일별 역할
 
-### 2-1. AWS 로그인 방식 결정
-
-둘 중 하나를 선택합니다.
-
-- 방법 A: IAM Access Key / Secret Key 사용
-- 방법 B: AWS SSO 또는 GitHub OIDC 사용
-
-가장 쉬운 시작은 IAM Access Key 방식입니다. 나중에 OIDC로 바꿔도 됩니다.
-
-### 2-2. 로컬 AWS CLI 연결
-
-```bash
-aws configure
-```
-
-입력할 값:
-
-- AWS Access Key ID
-- AWS Secret Access Key
-- Default region name: `ap-northeast-2`
-- Default output format: `json`
-
-확인 명령:
-
-```bash
-aws sts get-caller-identity
-```
-
-### 2-3. 먼저 만들어야 하는 것
-
-Terraform을 실행하기 전에 **수동으로 먼저 만들어야 하는 자원**은 다음입니다.
-
-- **S3 bucket** (Terraform state 저장용)
-- **DynamoDB table** (Terraform lock용)
-
-그 다음 Terraform으로 만들 자원은 다음입니다.
-
-- ECR repositories (frontend, backend, ai)
-- VPC / Subnets / Internet Gateway
-- Aurora(MySQL Compatible)
-- EKS Cluster + Node Group는 나중에 별도 적용
-
-CI는 ECR이 준비된 뒤에 이미지를 push할 수 있으므로, Terraform 적용이 완료된 뒤에 GitHub Secrets와 CI를 설정합니다.
-
-## 3. Terraform 2단계 실행: 먼저 ECR/VPC/RDS, 그다음 EKS
-
-시작 전에 프론트/백/AI가 로컬에서 `docker build` 되는지 한 번 확인해두면, 인프라 문제와 애플리케이션 이미지 문제를 분리해서 디버깅하기 쉽습니다(권장, 필수 아님).
-
-### 3-1. state backend 생성
-
-Terraform state를 저장할 S3와 락을 위한 DynamoDB를 만듭니다.
-
-```bash
-aws s3 mb s3://mini3-tfstate-prod --region ap-northeast-2
-aws dynamodb create-table \
-  --table-name terraform-locks \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
-  --region ap-northeast-2
-```
-
-### 3-2. Terraform 변수 파일 준비
-
-`infra-medicare/terraform/terraform.tfvars.example`를 복사해서 로컬 파일을 만듭니다.
-
-Windows PowerShell 예시:
-
-```powershell
-cd infra-medicare/terraform
-Copy-Item terraform.tfvars.example terraform.tfvars
-```
-
-Linux/macOS라면:
-
-```bash
-cp terraform.tfvars.example terraform.tfvars
-```
-
-`terraform.tfvars` 편집 예시:
+#### `provider.tf`
+AWS 프로바이더 및 기본 태그:
 
 ```hcl
-aws_region             = "ap-northeast-2"
-project_name           = "medical-service"
-vpc_cidr               = "10.0.0.0/16"
-public_subnet_cidrs    = ["10.0.1.0/24", "10.0.2.0/24"]
-private_subnet_cidrs   = ["10.0.11.0/24", "10.0.12.0/24"]
-db_name                = "medicalservicedb"
-db_username            = "admin"
-db_password            = "YOUR_SECURE_PASSWORD_HERE"
-db_instance_class      = "db.t3.medium"
-eks_cluster_version    = "1.27"
-eks_node_group_size    = 2
-ecr_frontend_name      = "medical-service-frontend"
-ecr_backend_name       = "medical-service-backend"
-ecr_ai_name            = "medical-service-ai"
+provider "aws" {
+  region = var.aws_region
+
+  default_tags {
+    tags = {
+      Project     = var.project_name
+      Environment = var.environment
+      ManagedBy   = "Terraform"
+    }
+  }
+}
 ```
 
-### 3-3. Terraform 실행 (한 번에)
+#### `backend.tf`
+Terraform 상태 백엔드 설정 (S3 + DynamoDB):
 
-아래처럼 두 번 나눠서 적용합니다.
+```hcl
+# ⚠️ backend 블록 내부에서는 변수 사용 불가!
+# 'terraform init' 시 -backend-config 플래그 사용:
+#
+# terraform init \
+#   -backend-config="bucket=..." \
+#   -backend-config="key=..." \
+#   ...
+```
 
-**Step 1: terraform init with backend config**
+#### `variables.tf`
+입력 변수 정의:
+
+```hcl
+variable "aws_region" {
+  type    = string
+  default = "ap-northeast-2"
+}
+
+variable "project_name" {
+  type    = string
+  default = "medical-service"
+}
+
+variable "db_password" {
+  type      = string
+  sensitive = true  # 출력 마스킹
+}
+# ... 기타 변수
+```
+
+#### `vpc.tf`
+VPC, 서브넷, IGW, NAT GW, 라우팅 테이블
+
+#### `eks.tf`
+EKS 클러스터, 노드 그룹, IAM 역할
+
+#### `rds.tf`
+Aurora MySQL 클러스터 (프라이빗 서브넷)
+
+#### `ecr.tf`
+ECR 리포지토리 (frontend, backend, ai × 3개)
+
+#### `outputs.tf`
+중요한 리소스 정보 출력 (ECR URI, EKS 엔드포인트, RDS 엔드포인트 등)
+
+### 2. Terraform 워크플로
+
+#### 초기 실행 (최초 1회)
 
 ```bash
-cd infra-medicare/terraform
+cd medical-service-infra/terraform
 
-# 이미 'mini3-tfstate-prod' S3 버킷과 'terraform-locks' DynamoDB 테이블을 만들었다면:
+# 1. Backend 초기화
 terraform init \
-  -backend-config="bucket=mini3-tfstate-prod" \
+  -backend-config="bucket=medical-service-tf-state" \
   -backend-config="key=medical-service/terraform.tfstate" \
   -backend-config="region=ap-northeast-2" \
-  -backend-config="dynamodb_table=terraform-locks" \
-  -backend-config="encrypt=true"
+  -backend-config="dynamodb_table=medical-service-tf-lock"
 
-terraform init -backend-config="bucket=mini3-tfstate-prod" -backend-config="key=medical-service/terraform.tfstate" -backend-config="region=ap-northeast-2" -backend-config="dynamodb_table=terraform-locks" -backend-config="encrypt=true"
-```
+# 2. 변수 파일 준비
+cp terraform.tfvars.example terraform.tfvars
+# terraform.tfvars 에서 db_password 변경
 
-버킷 이름이 다르면 위 명령에서 `bucket=your-bucket-name`으로 수정합니다.
-
-**Step 2: Format, validate, plan**
-
-```bash
+# 3. Plan & Validate
 terraform fmt -recursive
 terraform validate
-terraform plan -out tfplan
-```
+terraform plan
 
-**Step 3: First apply only non-EKS resources**
-
-```bash
-terraform apply -target=aws_ecr_repository.frontend \
-  -target=aws_ecr_repository.backend \
-  -target=aws_ecr_repository.ai \
-  -target=aws_vpc.main \
-  -target=aws_internet_gateway.gw \
-  -target=aws_subnet.public \
-  -target=aws_subnet.private \
-  -target=aws_route_table.public \
-  -target=aws_route_table_association.public_assoc \
-  -target=aws_security_group.rds \
-  -target=aws_db_subnet_group.default \
-  -target=aws_rds_cluster.aurora \
-  -target=aws_rds_cluster_instance.aurora_primary
-```
-
-**Step 4: 결과 확인**
-
-```bash
-terraform output
-```
-
-### 3-4. 적용 직후 확인할 값
-
-`terraform output`에서 첫 단계 기준으로 아래 값들을 확인합니다. 이 값들은 GitHub Secrets와 k8s 매니페스트에서 필요합니다.
-
-- `ecr_frontend_repository` = ECR frontend 저장소 URL
-- `ecr_backend_repository` = ECR backend 저장소 URL
-- `ecr_ai_repository` = ECR AI 저장소 URL
-- `rds_address` = Aurora writer endpoint 호스트명 (예: `medical-service-aurora.cluster-xxxx.ap-northeast-2.rds.amazonaws.com`)
-- `rds_endpoint` = Aurora 호스트:포트 (예: `medical-service-aurora.cluster-xxxx.ap-northeast-2.rds.amazonaws.com:3306`)
-- `db_name` = 데이터베이스 이름
-
-EKS 관련 출력값(`eks_cluster_name`, `eks_cluster_endpoint`)은 두 번째 적용 후 확인합니다.
-
-### 3-5. EKS는 나중에 별도 적용
-
-ECR/VPC/RDS가 준비된 뒤에 EKS만 추가로 만듭니다.
-
-```bash
+# 4. Apply
 terraform apply
 ```
 
-이 두 번째 적용에서는 `eks.tf`에 있는 EKS Cluster / Node Group만 생성됩니다.
-
-### 3-6. 두 단계로 나눌 때 참고
-
-- 리소스가 많아 `terraform apply` 시간이 길어질 수 있습니다.
-- 중간에 실패하면 이미 생성된 리소스는 남을 수 있으므로, 에러 수정 후 `terraform plan`/`apply`를 다시 실행해 상태를 수렴시킵니다.
-- `-target`은 첫 단계만 만들 때 쓰는 임시 방식입니다. 첫 단계가 끝나면 두 번째 단계에서는 `terraform apply`만 실행해서 전체 상태를 맞춥니다.
-
-## 4. GitHub Secrets 등록
-
-GitHub에서 각 레포의 `Settings > Secrets and variables > Actions`에 등록합니다.
-
-### 4-1. `frontend-medicare` 레포 secrets
-
-- `AWS_REGION` = `ap-northeast-2`
-- `AWS_ACCOUNT_ID` = `<12자리 AWS 계정 ID>`
-- `AWS_ACCESS_KEY_ID` = `<IAM access key>`
-- `AWS_SECRET_ACCESS_KEY` = `<IAM secret key>`
-- `ECR_FRONTEND_REPOSITORY` = `frontend-medicare`
-
-전체 ECR URI를 넣고 싶으면 아래 형태로 저장해도 됩니다.
-
-- `ECR_FRONTEND_URI` = `123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/frontend-medicare`
-
-### 4-2. `backend-medicare` 레포 secrets
-
-- `AWS_REGION` = `ap-northeast-2`
-- `AWS_ACCOUNT_ID` = `<12자리 AWS 계정 ID>`
-- `AWS_ACCESS_KEY_ID` = `<IAM access key>`
-- `AWS_SECRET_ACCESS_KEY` = `<IAM secret key>`
-- `ECR_BACKEND_REPOSITORY` = `backend-medicare`
-
-전체 ECR URI를 넣고 싶으면 아래 형태로 저장해도 됩니다.
-
-- `ECR_BACKEND_URI` = `123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/backend-medicare`
-
-### 4-3. `infra-medicare` 레포 secrets
-
-Terraform이나 Argo CD 관련 작업이 있으면 아래를 추가합니다.
-
-- `AWS_REGION` = `ap-northeast-2`
-- `AWS_ACCOUNT_ID` = `<12자리 AWS 계정 ID>`
-- `AWS_ACCESS_KEY_ID` = `<IAM access key>`
-- `AWS_SECRET_ACCESS_KEY` = `<IAM secret key>`
-- `TERRAFORM_STATE_BUCKET` = `<state bucket name>`
-- `ARGOCD_GIT_TOKEN` = `<infra 레포에 push 가능한 PAT>`
-
-`ARGOCD_GIT_TOKEN`은 CI가 infra 레포의 매니페스트를 자동 수정할 때만 필요합니다.
-
-### 4-4. `ai-medicare` 레포 secrets
-
-AI 서비스도 frontend/backend와 동일한 배포 대상이므로 아래 secrets를 등록합니다.
-
-- `AWS_REGION` = `ap-northeast-2`
-- `AWS_ACCOUNT_ID` = `<12자리 AWS 계정 ID>`
-- `AWS_ACCESS_KEY_ID` = `<IAM access key>`
-- `AWS_SECRET_ACCESS_KEY` = `<IAM secret key>`
-- `ECR_AI_REPOSITORY` = `medical-service-ai`
-
-전체 ECR URI를 넣고 싶으면:
-
-- `ECR_AI_URI` = `123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-ai`
-
-선택 사항 (AI가 RDS에 직접 접근해야 할 때만):
-
-- `DATABASE_URL` = `mysql://<user>:<password>@<rds-endpoint>:3306/<dbname>`
-
-`DATABASE_URL`은 AI 서비스가 RDS의 데이터를 직접 읽어야 할 때만 필요합니다. 만약 AI 서비스가 백엔드를 통해서만 데이터에 접근한다면 백엔드에 `DATABASE_URL`을 두고 AI는 백엔드 API만 호출해도 됩니다.
-
-## 5. Terraform 결과 점검: EKS / RDS 상태 확인
-
-Terraform 1차 실행이 끝났다면 아래를 바로 확인합니다.
-
-### 5-1. 생성 순서
-
-Terraform으로 아래를 만듭니다.
-
-- VPC
-- Subnet
-- Security Group
-- Aurora(MySQL Compatible)
-
-EKS Cluster / Node Group는 2차 적용에서 별도로 생성합니다.
-
-### 5-2. 점검 명령
+#### 이후 변경
 
 ```bash
-aws eks update-kubeconfig --region ap-northeast-2 --name <EKS_CLUSTER_NAME>
-kubectl get nodes
+terraform plan
+terraform apply
+terraform destroy  # 삭제 시
 ```
 
-### 5-3. 꼭 확인할 것
+---
 
-- `kubectl get nodes`가 정상적으로 나오는가
-- EKS 워커 노드가 `Ready` 상태인가
-- RDS endpoint가 출력되는가
+## GitHub Actions CI/CD
 
-EKS 노드가 없으면 Argo CD가 배포를 해도 Pod가 올라가지 않습니다.
+### CI/CD 흐름
 
-## 6. GitHub Actions로 프론트/백 CI 활성화
+각 서비스 레포에서:
 
-Terraform 1차 실행으로 ECR이 준비되었기 때문에 이제 GitHub Actions가 이미지를 push할 수 있습니다.
+1. **Checkout** → 코드 클론
+2. **빌드** → 언어별 빌드 (npm, gradle, pip 등)
+3. **Docker 빌드** → Dockerfile 기반 이미지 생성
+4. **ECR 로그인** → AWS 인증
+5. **Docker 푸시** → ECR에 이미지 푸시
 
-### 6-1. 프론트 CI 흐름
+### 워크플로 파일 위치
 
-`frontend-medicare/.github/workflows/frontend-ci-cd.yml`에서는 보통 아래 순서를 사용합니다.
+- `frontend-medicare/.github/workflows/ci-cd.yml`
+- `backend-medicare/.github/workflows/ci-cd.yml`
+- `ai-medicare/.github/workflows/ci-cd.yml`
 
-1. Checkout
-2. Node 설치
-3. 의존성 설치 및 빌드
-4. Docker build
-5. ECR login
-6. Docker push
+### 워크플로 예시
 
-### 6-2. 백엔드 CI 흐름
-
-`backend-medicare/.github/workflows/backend-ci-cd.yml`에서는 보통 아래 순서를 사용합니다.
-
-1. Checkout
-2. Node 또는 Java 런타임 설치
-3. 테스트 / 빌드
-4. Docker build
-5. ECR login
-6. Docker push
-
-### 6-3. 백엔드 워크플로 예시
-
-현재 구조는 아래처럼 쓰면 됩니다.
-
+**Frontend (React):**
 ```yaml
-name: Backend CI/CD
+name: Build and Push to ECR
 
 on:
   push:
     branches: [ main ]
 
 jobs:
-  build-and-push:
+  build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
+      
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+      
+      - name: Install & Build
+        run: |
+          npm install
+          npm run build
+      
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
-
-      - name: Login to Amazon ECR
+          aws-region: ap-northeast-2
+      
+      - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, tag, and push image to ECR
+      
+      - name: Push image
         env:
-          ECR_REPOSITORY: ${{ secrets.ECR_BACKEND_REPOSITORY }}
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
           IMAGE_TAG: ${{ github.sha }}
         run: |
-          REPO_URI="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com/${ECR_REPOSITORY}"
-          docker build -t ${REPO_URI}:${IMAGE_TAG} .
-          docker push ${REPO_URI}:${IMAGE_TAG}
+          docker build -t $ECR_REGISTRY/${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG
 ```
 
-### 6-4. CI가 실제로 성공했는지 확인
+**Backend (Spring Boot):**
+```yaml
+name: Build and Push to ECR
 
-GitHub Actions에서 다음을 확인합니다.
+on:
+  push:
+    branches: [ main ]
 
-- 워크플로 실행 성공
-- ECR repository에 이미지 생성
-- 태그가 `github.sha` 값으로 올라갔는지 확인
-
-## 7. Argo CD 설치 준비
-
-EKS가 준비된 뒤에 Argo CD를 설치합니다.
-
-### 7-1. kubeconfig 연결
-
-```bash
-aws eks update-kubeconfig --region ap-northeast-2 --name <EKS_CLUSTER_NAME>
-kubectl get nodes
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      
+      - name: Build with Gradle
+        run: ./gradlew bootJar
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+      
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Push image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG
 ```
 
-### 7-2. Argo CD 설치
+**AI (FastAPI + Python):**
+```yaml
+name: Build and Push to ECR
 
-```bash
-kubectl create namespace argocd
-kubectl apply -n argocd -f https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+      
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+      
+      - name: Push image
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG
 ```
 
-### 7-3. Argo CD 접속 확인
+### GitHub Secrets 설정
 
-```bash
-kubectl get pods -n argocd
+각 레포의 **Settings → Secrets and variables → Actions**:
+
+```
+AWS_ACCESS_KEY_ID              = xxxxxxxxxxxxxxxxxxxx
+AWS_SECRET_ACCESS_KEY          = xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ECR_REPOSITORY                 = medical-service-frontend (또는 backend, ai)
 ```
 
-필요하면 포트포워딩으로 UI를 확인합니다.
+---
 
-```bash
-kubectl port-forward svc/argocd-server -n argocd 8080:443
+## Kubernetes & ArgoCD
+
+### 1. k8s 매니페스트 구조 (Kustomize)
+
+#### Base: `k8s/base/kustomization.yaml`
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: default
+
+resources:
+  - namespace.yaml
+  - frontend-deployment.yaml
+  - frontend-service.yaml
+  - backend-deployment.yaml
+  - backend-service.yaml
+  - ai-deployment.yaml
+  - ai-service.yaml
+
+images:
+  - name: medical-service-frontend
+    newName: medical-service-frontend
+  - name: medical-service-backend
+    newName: medical-service-backend
+  - name: medical-service-ai
+    newName: medical-service-ai
 ```
 
-## 8. Argo CD application.yaml 연결
+#### Prod Overlay: `k8s/overlays/prod/kustomization.yaml`
 
-`infra-medicare/argocd/application.yaml`은 Argo CD가 어느 Git 레포를 보고 어느 경로를 배포할지 정의합니다.
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
 
-### 8-1. 반드시 실제 값으로 바꿔야 하는 것
+bases:
+  - ../../base
 
-- `spec.source.repoURL`
-- `spec.source.path`
-- `spec.destination.namespace`
+# ← 여기서 실제 ECR URI와 이미지 태그 지정 (수동으로 관리)
+images:
+  - name: medical-service-frontend
+    newName: 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-frontend
+    newTag: sha-a1b2c3d4
 
-예시:
+  - name: medical-service-backend
+    newName: 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-backend
+    newTag: sha-e5f6g7h8
+
+  - name: medical-service-ai
+    newName: 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-ai
+    newTag: sha-i9j0k1l2
+```
+
+### 2. ArgoCD Application: `argocd/application.yaml`
 
 ```yaml
 apiVersion: argoproj.io/v1alpha1
@@ -503,166 +476,427 @@ kind: Application
 metadata:
   name: medical-service
   namespace: argocd
+
 spec:
   project: default
+
   source:
-    repoURL: https://github.com/<YOUR_ORG>/infra-medicare.git
+    repoURL: https://github.com/YOUR_ORG/infra-medicare.git
     targetRevision: main
     path: k8s/overlays/prod
+
   destination:
     server: https://kubernetes.default.svc
-    namespace: medical-service
+    namespace: default
+
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
 ```
 
-### 8-2. 적용 명령
+### 3. Deployment 예시
 
-```bash
-kubectl apply -f infra-medicare/argocd/application.yaml -n argocd
-kubectl get applications -n argocd
+**Frontend:**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+      - name: frontend
+        image: medical-service-frontend
+        ports:
+        - containerPort: 80
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 10
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 80
+          initialDelaySeconds: 5
+          periodSeconds: 5
 ```
 
-## 9. k8s 매니페스트의 이미지 태그 갱신
+**Backend:**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: backend
+  template:
+    metadata:
+      labels:
+        app: backend
+    spec:
+      containers:
+      - name: backend
+        image: medical-service-backend
+        ports:
+        - containerPort: 8080
+        env:
+        - name: DATABASE_URL
+          value: "jdbc:mysql://aurora-endpoint:3306/medicalservicedb"
+        - name: DATABASE_USER
+          value: "admin"
+        - name: DATABASE_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: db-credentials
+              key: password
+        - name: AI_BASE_URL
+          value: "http://ai:8000"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 15
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8080
+          initialDelaySeconds: 10
+```
 
-Argo CD는 Git에 있는 매니페스트를 보고 배포합니다. 즉, 이미지가 바뀌면 매니페스트도 바뀌어야 합니다.
+**AI:**
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: ai
+  template:
+    metadata:
+      labels:
+        app: ai
+    spec:
+      containers:
+      - name: ai
+        image: medical-service-ai
+        ports:
+        - containerPort: 8000
+        env:
+        - name: LOG_LEVEL
+          value: "INFO"
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /health/ready
+            port: 8000
+          initialDelaySeconds: 10
+```
 
-### 9-1. 가장 쉬운 방식
+---
 
-- `infra-medicare/k8s/base/backend-deployment.yaml`의 `image:` 값을 실제 ECR 이미지로 바꾼다
-- 또는 `infra-medicare/k8s/overlays/prod/kustomization.yaml`에서 `images:`로 덮어쓴다
+## 환경 변수 및 설정 관리
 
-### 9-2. kustomize 방식 예시
+### ConfigMap
 
 ```yaml
-images:
-  - name: backend
-    newName: 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/backend-medicare
-    newTag: v1.0.0
-  - name: frontend
-    newName: 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/frontend-medicare
-    newTag: v1.0.0
-  - name: ai
-    newName: 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/ai-medicare
-    newTag: v1.0.0
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: default
+
+data:
+  LOG_LEVEL: "DEBUG"
+  AI_BASE_URL: "http://ai:8000"
+  BACKEND_API_URL: "http://backend:8080"
 ```
 
-### 9-3. 이미지 업데이트를 누가 하느냐
+### Secret
 
-둘 중 하나로 갑니다.
+```bash
+kubectl create secret generic db-credentials \
+  --from-literal=password="YourPassword123!" \
+  --from-literal=username="admin"
+```
 
-- 수동: CI 후 사람이 `kustomization.yaml` 수정하고 push
-- 자동: CI가 `infra-medicare` 레포에 커밋하고 push
+---
 
-자동으로 할 경우 `ARGOCD_GIT_TOKEN`이 필요합니다.
+## 로컬 개발 환경
 
-### 9-4. AI 이미지도 동일 overlay에 포함
+### Docker Compose
 
-현재 구조에서는 AI도 frontend/backend와 동일하게 `k8s/overlays/prod`의 `images:`에 함께 포함하면 됩니다.
-즉 별도 Argo CD Application을 추가하지 않고, `medical-service` 단일 Application에서 같이 Sync 합니다.
-운영 시에는 `ECR_AI_REPOSITORY`, `DATABASE_URL`, `MODEL_ENV` 값만 누락되지 않게 관리하면 됩니다.
+```yaml
+version: '3.8'
 
-## 10. 추천 실행 순서 요약
+services:
+  frontend:
+    build:
+      context: ../frontend-medicare
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    environment:
+      - REACT_APP_API_URL=http://localhost:3000
+    depends_on:
+      - backend
 
-실제로는 아래 순서로 진행하면 됩니다.
+  backend:
+    build:
+      context: ../backend-medicare
+      dockerfile: Dockerfile
+    ports:
+      - "3000:8080"
+    environment:
+      - DATABASE_URL=jdbc:mysql://mysql:3306/medicalservicedb
+      - DATABASE_USER=root
+      - DATABASE_PASSWORD=rootpassword
+      - AI_BASE_URL=http://ai:8000
+    depends_on:
+      - mysql
+      - ai
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-### AWS 계정 받기 전
+  ai:
+    build:
+      context: ../ai-medicare
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8000"
+    environment:
+      - LOG_LEVEL=DEBUG
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
-1. 로컬 개발 도구 설치
-2. `frontend-medicare`, `backend-medicare`, `ai-medicare`, `infra-medicare` 레포 생성
-3. 프론트/백 기본 코드와 Dockerfile 준비
-4. AI 기본 코드와 FastAPI, scikit-learn, 더미 데이터 스크립트 준비
+  mysql:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=rootpassword
+      - MYSQL_DATABASE=medicalservicedb
+    volumes:
+      - mysql_data:/var/lib/mysql
 
-### AWS 계정 받은 직후
+volumes:
+  mysql_data:
+```
 
-1. `aws configure`
-2. S3 + DynamoDB로 Terraform state backend 생성
-3. Terraform 1차 실행으로 ECR/VPC/RDS 생성, 2차 실행으로 EKS 생성
-4. GitHub Secrets 등록
+**실행:**
+```bash
+docker-compose up -d
+docker-compose logs -f backend
+docker-compose down
+```
 
-### 그다음
+---
 
-1. GitHub Actions로 이미지 push 확인
-2. `kubectl get nodes` 확인
-3. Argo CD 설치
-4. `application.yaml` 연결
-5. k8s 이미지 태그 업데이트
-6. Argo CD 배포 확인
-7. AI 서비스 배포 및 백엔드 연동 확인
+## 수동 이미지 업데이트 절차
 
-같이 배포 원칙:
+### 절차 개요
 
-- frontend/backend/ai 모두 동일하게 `k8s/overlays/prod`에 포함
-- Argo CD `medical-service` Application 1개에서 함께 Sync
-- 배포 순서는 이미지 push 후 overlay 이미지 태그 갱신 -> Argo CD Sync
+1. GitHub Actions이 이미지를 빌드해 ECR에 푸시 (자동)
+2. 개발자가 `kustomization.yaml`의 이미지 태그 수정 (수동)
+3. infra-medicare 레포에 커밋 & 푸시 (수동)
+4. ArgoCD가 Git 변경을 감지해 자동 배포 (자동)
 
-## 11. GitHub Secrets 한 번에 정리
+### Step 1: ECR 이미지 확인
 
-### frontend-medicare
+```bash
+aws ecr describe-images \
+  --repository-name medical-service-frontend \
+  --region ap-northeast-2 \
+  --query 'imageDetails[*].[imageTags,imagePushedAt]' \
+  --output table
+```
 
-- `AWS_REGION`
-- `AWS_ACCOUNT_ID`
-- `AWS_ACCESS_KEY_ID`
-- `AWS_SECRET_ACCESS_KEY`
-- `ECR_FRONTEND_REPOSITORY`
+**출력 예시:**
+```
+imageTags       imagePushedAt
+───────────────────────────────
+['sha-a1b2c3d4']   2026-05-07 10:30:00+00:00
+```
 
-### backend-medicare
+### Step 2: kustomization.yaml 수정
 
-- `AWS_REGION`
-- `AWS_ACCOUNT_ID`
-- `AWS_ACCESS_KEY_ID`
-- `AWS_SECRET_ACCESS_KEY`
-- `ECR_BACKEND_REPOSITORY`
+`infra-medicare/k8s/overlays/prod/kustomization.yaml` 열기:
 
-### ai-medicare
+**수정 전:**
+```yaml
+images:
+  - name: medical-service-frontend
+    newTag: sha-old123
+  - name: medical-service-backend
+    newTag: sha-old456
+  - name: medical-service-ai
+    newTag: sha-old789
+```
 
-- `AWS_REGION`
-- `AWS_ACCOUNT_ID`
-- `AWS_ACCESS_KEY_ID`
-- `AWS_SECRET_ACCESS_KEY`
-- `ECR_AI_REPOSITORY`
-- `DATABASE_URL`
-- `MODEL_ENV`
+**수정 후:**
+```yaml
+images:
+  - name: medical-service-frontend
+    newTag: sha-a1b2c3d4  # ← 새 commit SHA
+  - name: medical-service-backend
+    newTag: sha-e5f6g7h8  # ← 새 commit SHA
+  - name: medical-service-ai
+    newTag: sha-i9j0k1l2  # ← 새 commit SHA
+```
 
-### infra-medicare
+### Step 3: 커밋 & 푸시
 
-- `AWS_REGION`
-- `AWS_ACCOUNT_ID`
-- `AWS_ACCESS_KEY_ID`
-- `AWS_SECRET_ACCESS_KEY`
-- `TERRAFORM_STATE_BUCKET`
-- `ARGOCD_GIT_TOKEN` (자동 커밋할 때만)
+```bash
+cd infra-medicare
 
-## 12. 자주 막히는 지점
+git add k8s/overlays/prod/kustomization.yaml
 
-- **ECR이 없는데 CI를 먼저 돌림**: 안 됩니다. Terraform으로 ECR 먼저 만들어야 합니다.
-- **EKS 노드 그룹이 없음**: Argo CD는 배포해도 Pod가 안 뜹니다.
-- **`repoURL`이 실제 GitHub 주소가 아님**: Argo CD가 소스를 못 찾습니다.
-- **GitHub Secrets 누락**: CI에서 AWS login이나 ECR push가 실패합니다.
-- **AWS 키를 Git에 커밋**: 절대 하면 안 됩니다.
+git commit -m "ci: update image tags to sha-a1b2c3d4, sha-e5f6g7h8, sha-i9j0k1l2"
 
-- **AI 레포를 프론트에 직접 연결**: 보통은 백엔드가 AI를 호출하는 구조가 더 낫습니다.
+git push origin main
+```
 
-- **AI ECR을 Terraform 대상에서 누락함**: AI도 다른 서비스처럼 ECR이 필요합니다.
+### Step 4: ArgoCD 동기화 확인
 
-## 13. 최종 체크리스트
+```bash
+# ArgoCD가 자동으로 감지해 배포
+kubectl get application medical-service -n argocd
 
-- [ ] 로컬 도구 설치 완료
-- [ ] GitHub 레포 4개 생성 완료
-- [ ] AI 레포 `ai-medicare` 생성 완료
-- [ ] AWS 계정 수령 후 `aws configure` 완료
-- [ ] S3 + DynamoDB state backend 생성 완료
-- [ ] Terraform 1차 실행으로 ECR/VPC/Aurora 생성 완료
-- [ ] Terraform 2차 실행으로 EKS 생성 완료
-- [ ] AI ECR 생성 완료
-- [ ] GitHub Secrets 등록 완료
-- [ ] CI로 ECR push 성공 확인
-- [ ] `kubectl get nodes` 정상
-- [ ] Argo CD 설치 완료
-- [ ] `application.yaml` 실제 repoURL/path 반영 완료
-- [ ] k8s 이미지 태그 반영 완료
-- [ ] AI 서비스 배포 완료
-- [ ] 백엔드가 AI API 호출 확인
-- [ ] Argo CD에서 `Synced & Healthy` 확인
+# Pod 롤링 업데이트 확인
+kubectl get pods
+kubectl logs deployment/frontend
+```
+
+**예상 상태:**
+```
+NAME              SYNC STATUS   HEALTH STATUS
+medical-service   Synced        Healthy
+```
+
+---
+
+## 모니터링 및 로깅
+
+### Pod 로그 조회
+
+```bash
+# 실시간 로그
+kubectl logs -f deployment/backend
+
+# 여러 Pod 로그
+kubectl logs -f -l app=backend
+
+# 이전 Pod 로그 (크래시 후)
+kubectl logs [POD_NAME] --previous
+```
+
+### CloudWatch 로그
+
+```bash
+# Aurora 로그
+aws logs tail /aws/rds/cluster/medical-service-aurora --follow
+
+# 로그 그룹 목록
+aws logs describe-log-groups
+```
+
+---
+
+## 보안 체크리스트
+
+- [ ] `db_password` 등 민감 정보는 `.gitignore` 포함
+- [ ] RDS는 프라이빗 서브넷에 배치
+- [ ] ECR 이미지 스캔 활성화
+- [ ] RBAC 정책 설정
+- [ ] Secret은 암호화되어 저장
+- [ ] GitHub PAT는 최소 권한 범위
+- [ ] ArgoCD 초기 password 변경
+
+---
+
+## 트러블슈팅
+
+### EKS 노드 연결 불가
+
+```bash
+kubectl cluster-info
+kubectl describe node [NODE_NAME]
+```
+
+### Pod CrashLoopBackOff
+
+```bash
+kubectl describe pod [POD_NAME]
+kubectl logs [POD_NAME]
+kubectl logs [POD_NAME] --previous
+```
+
+### ArgoCD 동기화 실패
+
+```bash
+kubectl describe application medical-service -n argocd
+kubectl logs -n argocd deployment/argocd-application-controller
+```
+
+### RDS 연결 테스트
+
+```bash
+# 테스트 Pod 생성
+kubectl run mysql-test --image=mysql:8.0 --rm -it --restart=Never -- \
+  mysql -h [RDS_ENDPOINT] -u admin -p [DB_NAME]
+```
+
+---
+
+**Last Updated**: May 2026  
+**Version**: 2.0  
+**Project**: Medical Service Infrastructure

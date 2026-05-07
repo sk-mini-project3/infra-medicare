@@ -17,5 +17,16 @@ spec:
       containers:
         - name: frontend
           image: <FRONTEND_IMAGE_PLACEHOLDER>
+          env:
+            - name: REACT_APP_API_BASE
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: BACKEND_API_URL
+            - name: NODE_ENV
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: NODE_ENV
           ports:
             - containerPort: 80

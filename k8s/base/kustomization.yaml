@@ -1,4 +1,6 @@
 resources:
+  - configmap.yaml
+  - secret.yaml
   - frontend-deployment.yaml
   - backend-deployment.yaml
   - ai-deployment.yaml

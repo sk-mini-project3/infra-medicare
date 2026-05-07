@@ -17,5 +17,16 @@ spec:
       containers:
         - name: ai
           image: <AI_IMAGE_PLACEHOLDER>
+          env:
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: LOG_LEVEL
+            - name: BACKEND_API_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: app-config
+                  key: BACKEND_API_URL
           ports:
             - containerPort: 8000
