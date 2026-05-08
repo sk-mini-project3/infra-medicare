@@ -1,6 +1,8 @@
 # Prod 환경 Kustomization
 # 운영 환경용 설정: ECR 이미지, 안정적인 replica, 운영용 도메인
 
+namespace: medical-service
+
 resources:
   - ../../base
 
@@ -19,13 +21,13 @@ configMapGenerator:
 # 실제 ECR 이미지 주소로 변경됨
 # 주의: newTag는 실제 배포 시 GitHub commit SHA 또는 특정 버전으로 업데이트 필요
 images:
-  - name: <FRONTEND_IMAGE_PLACEHOLDER>
+  - name: medical-service-frontend
     newName: 296336226405.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-frontend
     newTag: "latest"  # ← 실제 배포 시 GitHub commit SHA로 변경 (예: sha-a1b2c3d4)
-  - name: <BACKEND_IMAGE_PLACEHOLDER>
+  - name: medical-service-backend
     newName: 296336226405.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-backend
     newTag: "latest"  # ← 실제 배포 시 GitHub commit SHA로 변경 (예: sha-e5f6g7h8)
-  - name: <AI_IMAGE_PLACEHOLDER>
+  - name: medical-service-ai
     newName: 296336226405.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-ai
     newTag: "latest"  # ← 실제 배포 시 GitHub commit SHA로 변경 (예: sha-i9j0k1l2)
 

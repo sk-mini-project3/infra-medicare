@@ -180,6 +180,15 @@ db_password = "YourStrongPassword123!"  # ← 강력한 비밀번호로 변경
 # 기타 변수(vpc_cidr, db_instance_class 등)는 기본값 사용 가능
 ```
 
+외부 HeidiSQL 접속을 잠깐 허용하려면 아래처럼 바꿉니다.
+
+```hcl
+db_publicly_accessible = true
+db_allowed_cidrs       = ["내_공인_IP/32"]
+```
+
+테스트가 끝나면 `db_publicly_accessible = false`로 돌리거나 `db_allowed_cidrs`를 VPC CIDR로 되돌리는 편이 안전합니다.
+
 ### 3-2. Phase 1 Apply (ECR, VPC, Aurora만 생성)
 
 ```bash
@@ -191,7 +200,7 @@ terraform plan -target=aws_ecr_repository.frontend \
                 -target=aws_subnet.public \
                 -target=aws_subnet.private \
                 -target=aws_rds_cluster.aurora \
-                -target=aws_rds_cluster_instance.aurora
+                -target=aws_rds_cluster_instance.aurora_primary
 
 # Apply 실행
 terraform apply -target=aws_ecr_repository.frontend \
@@ -201,7 +210,7 @@ terraform apply -target=aws_ecr_repository.frontend \
                 -target=aws_subnet.public \
                 -target=aws_subnet.private \
                 -target=aws_rds_cluster.aurora \
-                -target=aws_rds_cluster_instance.aurora
+                -target=aws_rds_cluster_instance.aurora_primary
 
 # yes 입력하면 5~10분 소요
 ```
@@ -294,7 +303,7 @@ kubectl create secret generic db-credentials \
   --namespace default \
   --from-literal=DB_USERNAME="$DB_USERNAME" \
   --from-literal=DB_PASSWORD="$DB_PASSWORD" \
-  --from-literal=DATABASE_URL="mysql://${DB_USERNAME}:${DB_PASSWORD}@${RDS_ENDPOINT}:3306/${DB_NAME}"
+  --from-literal=DATABASE_URL="jdbc:mysql://${DB_USERNAME}:${DB_PASSWORD}@${RDS_ENDPOINT}:3306/${DB_NAME}"
 ```
 
 이미 `k8s/base/secret.yaml`를 적용할 계획이면, 위 명령으로 만든 Secret이 우선 사용되도록 하거나, 배포 전에 `secret.yaml`을 `kubectl apply` 하지 말고 Secret 생성 명령만 사용하세요. 값이 들어간 Secret 파일을 GitHub에 커밋하면 안 됩니다.
@@ -440,7 +449,7 @@ docker build -t medical-service-backend:local .
 docker run --rm -p 3000:3000 \
   -e LOG_LEVEL=info \
   -e AI_BASE_URL=http://host.docker.internal:8001 \
-  -e DATABASE_URL="mysql://admin:password@host.docker.internal:3306/medicalservicedb" \
+  -e DATABASE_URL="jdbc:mysql://admin:password@host.docker.internal:3306/medicalservicedb" \
   -e DB_USERNAME=admin \
   -e DB_PASSWORD=password \
   medical-service-backend:local
@@ -568,31 +577,25 @@ aws ecr describe-images \
 
 ### 7-2. 이미지 태그 수동 업데이트
 
-`infra-medicare/k8s/overlays/prod/kustomization.yaml`을 수정합니다:
 
-```yaml
-images:
-  - name: medical-service-frontend
-    newName: 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-frontend
-    newTag: sha-a1b2c3d4  # ← GitHub commit SHA 사용
+`kustomization.yaml` 이미지 태그 자동화 (PR 기반)
 
-  - name: medical-service-backend
-    newName: 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-backend
-    newTag: sha-e5f6g7h8
+CI가 각 서비스의 이미지를 빌드·푸시하면, 서비스별 GitHub Actions 워크플로가 자동으로
+`medical-service-infra/k8s/overlays/prod/kustomization.yaml`의 해당 서비스 이미지(`frontend`, `backend`, `ai`) `newName`과 `newTag`를
+업데이트한 브랜치를 생성하고 해당 변경을 포함한 Pull Request를 자동으로 만듭니다.
 
-  - name: medical-service-ai
-    newName: 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-ai
-    newTag: sha-i9j0k1l2
-```
+자동화 동작 요약:
 
-커밋 및 푸시:
+- 빌드 성공 → 이미지 푸시 → 워크플로가 `kustomization.yaml`을 업데이트한 브랜치 생성 → PR 생성
+- PR이 머지되면 ArgoCD가 변경을 감지하고 배포를 수행합니다.
 
-```bash
-cd infra-medicare
-git add k8s/overlays/prod/kustomization.yaml
-git commit -m "ci: update image tags to sha-a1b2c3d4, sha-e5f6g7h8, sha-i9j0k1l2"
-git push origin main
-```
+장점 및 주의사항:
+
+- 브랜치 보호가 활성화된 리포지토리에서도 동작합니다(자동 푸시 권한 불필요).  
+- PR을 통해 변경 내역 리뷰·CI를 통과한 후 배포하도록 워크플로를 설계했습니다.  
+- 자동 업데이트는 빌드된 이미지가 레지스트리에 정상적으로 푸시된 이후에 동작합니다.
+
+
 
 ### 7-3. ArgoCD 동기화 확인
 

@@ -17,13 +17,13 @@ configMapGenerator:
 # 개발용 이미지 설정
 # 로컬에서 docker build -t {이미지명}:local로 빌드한 이미지 사용
 images:
-  - name: <FRONTEND_IMAGE_PLACEHOLDER>
+  - name: medical-service-frontend
     newName: medical-service-frontend
     newTag: local
-  - name: <BACKEND_IMAGE_PLACEHOLDER>
+  - name: medical-service-backend
     newName: medical-service-backend
     newTag: local
-  - name: <AI_IMAGE_PLACEHOLDER>
+  - name: medical-service-ai
     newName: medical-service-ai
     newTag: local
 

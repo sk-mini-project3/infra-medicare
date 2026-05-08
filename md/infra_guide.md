@@ -9,10 +9,11 @@
 5. [Kubernetes & ArgoCD](#kubernetes--argocd)
 6. [환경 변수 및 설정 관리](#환경-변수-및-설정-관리)
 7. [로컬 개발 환경](#로컬-개발-환경)
-8. [수동 이미지 업데이트 절차](#수동-이미지-업데이트-절차)
+8. [이미지 태그 자동 업데이트 (PR 기반)](#이미지-태그-자동-업데이트-pr-기반)
 9. [모니터링 및 로깅](#모니터링-및-로깅)
 10. [보안 체크리스트](#보안-체크리스트)
 11. [트러블슈팅](#트러블슈팅)
+12. [개발순서](#개발순서)
 
 ---
 
@@ -58,8 +59,8 @@
 - **멀티 레포**: 각 서비스별 독립적인 Git 레포 → 팀 간 자율성
 - **IaC (Infrastructure as Code)**: Terraform으로 모든 AWS 리소스 관리
 - **GitOps**: ArgoCD가 Git 상태를 감시하고 클러스터 자동 동기화
-- **자동 배포**: 코드 푸시 → CI 빌드 → ECR 푸시 → (수동 이미지 태그 업데이트) → ArgoCD 감지 → 배포
-- **이미지 수동 업데이트**: 개발자가 `kustomization.yaml`에서 이미지 태그 관리 (ARGOCD_GIT_TOKEN 불필요, 간단하고 안전)
+- **자동 배포**: 코드 푸시 → CI 빌드 → ECR 푸시 → `kustomization.yaml` 자동 업데이트 PR 생성 → 머지 후 ArgoCD 감지 → 배포
+- **PR 기반 GitOps**: 이미지 태그 변경 이력을 PR로 리뷰하고 머지 후 반영 (브랜치 보호와 궁합이 좋음)
 
 ---
 
@@ -69,7 +70,9 @@
 
 ```
 medical-service-infra/
-├── DEPLOY.md                 # ← Phase별 배포 단계별 가이드
+├── md/
+│   ├── DEPLOY.md             # ← Phase별 배포 단계별 가이드
+│   └── infra_guide.md        # ← 이 파일
 ├── terraform/
 │   ├── provider.tf          # AWS 프로바이더 & backend 주석
 │   ├── backend.tf           # 상태 파일 backend 설명
@@ -99,31 +102,31 @@ medical-service-infra/
 ├── argocd/
 │   └── application.yaml     # ArgoCD Application
 │
-└── md/
-    └── infra_guide.md       # ← 이 파일
+└── scripts/
+    └── deploy.sh
 ```
 
 ### 4개 GitHub 레포 구조
 
-#### 1. `frontend-medicare`
+#### 1. `medical-service-frontend`
 ```
-frontend-medicare/
+medical-service-frontend/
 ├── Dockerfile
 ├── nginx.conf
 ├── package.json
 ├── .github/workflows/
-│   └── ci-cd.yml
+│   └── frontend-ci-cd.yml
 ├── src/
 └── public/
 ```
 
-#### 2. `backend-medicare`
+#### 2. `medical-service-backend`
 ```
-backend-medicare/
+medical-service-backend/
 ├── Dockerfile
 ├── pom.xml (또는 build.gradle)
 ├── .github/workflows/
-│   └── ci-cd.yml
+│   └── backend-ci-cd.yml
 ├── src/main/java/
 └── src/main/resources/
 ```
@@ -134,13 +137,13 @@ ai-medicare/
 ├── Dockerfile
 ├── requirements.txt
 ├── .github/workflows/
-│   └── ci-cd.yml
+│   └── ai-ci-cd.yml
 ├── app/
 │   └── main.py
 └── tests/
 ```
 
-#### 4. `infra-medicare` (이 폴더)
+#### 4. `medical-service-infra` (이 폴더)
 - Terraform 파일들
 - k8s 매니페스트 (base & overlays)
 - ArgoCD 설정
@@ -268,9 +271,9 @@ terraform destroy  # 삭제 시
 
 ### 워크플로 파일 위치
 
-- `frontend-medicare/.github/workflows/ci-cd.yml`
-- `backend-medicare/.github/workflows/ci-cd.yml`
-- `ai-medicare/.github/workflows/ci-cd.yml`
+- `medical-service-frontend/.github/workflows/frontend-ci-cd.yml`
+- `medical-service-backend/.github/workflows/backend-ci-cd.yml`
+- `ai-medicare/.github/workflows/ai-ci-cd.yml`
 
 ### 워크플로 예시
 
@@ -481,7 +484,7 @@ spec:
   project: default
 
   source:
-    repoURL: https://github.com/YOUR_ORG/infra-medicare.git
+    repoURL: https://github.com/YOUR_ORG/medical-service-infra.git
     targetRevision: main
     path: k8s/overlays/prod
 
@@ -675,7 +678,7 @@ version: '3.8'
 services:
   frontend:
     build:
-      context: ../frontend-medicare
+      context: ../medical-service-frontend
       dockerfile: Dockerfile
     ports:
       - "8080:80"
@@ -686,7 +689,7 @@ services:
 
   backend:
     build:
-      context: ../backend-medicare
+      context: ../medical-service-backend
       dockerfile: Dockerfile
     ports:
       - "3000:8080"
@@ -741,14 +744,14 @@ docker-compose down
 
 ---
 
-## 수동 이미지 업데이트 절차
+## 이미지 태그 자동 업데이트 (PR 기반)
 
 ### 절차 개요
 
-1. GitHub Actions이 이미지를 빌드해 ECR에 푸시 (자동)
-2. 개발자가 `kustomization.yaml`의 이미지 태그 수정 (수동)
-3. infra-medicare 레포에 커밋 & 푸시 (수동)
-4. ArgoCD가 Git 변경을 감지해 자동 배포 (자동)
+1. 서비스 CI가 이미지를 빌드해 ECR에 푸시 (자동)
+2. 워크플로가 `k8s/overlays/prod/kustomization.yaml`의 `images[].newName/newTag` 갱신 (자동)
+3. 변경 내용을 `ci/update-<service>-<sha>` 브랜치로 만들고 PR 생성 (자동)
+4. PR 머지 후 ArgoCD가 Git 변경을 감지해 자동 배포 (자동)
 
 ### Step 1: ECR 이미지 확인
 
@@ -767,45 +770,17 @@ imageTags       imagePushedAt
 ['sha-a1b2c3d4']   2026-05-07 10:30:00+00:00
 ```
 
-### Step 2: kustomization.yaml 수정
+### Step 2: 자동 생성된 PR 확인 및 머지
 
-`infra-medicare/k8s/overlays/prod/kustomization.yaml` 열기:
+서비스 레포 Actions 실행이 끝나면 자동으로 생성된 PR을 확인합니다.
 
-**수정 전:**
-```yaml
-images:
-  - name: medical-service-frontend
-    newTag: sha-old123
-  - name: medical-service-backend
-    newTag: sha-old456
-  - name: medical-service-ai
-    newTag: sha-old789
-```
+- 브랜치 예시: `ci/update-frontend-<github_sha>`
+- 커밋 메시지 예시: `ci: bump frontend image to <github_sha> [skip ci]`
+- 변경 파일: `k8s/overlays/prod/kustomization.yaml`
 
-**수정 후:**
-```yaml
-images:
-  - name: medical-service-frontend
-    newTag: sha-a1b2c3d4  # ← 새 commit SHA
-  - name: medical-service-backend
-    newTag: sha-e5f6g7h8  # ← 새 commit SHA
-  - name: medical-service-ai
-    newTag: sha-i9j0k1l2  # ← 새 commit SHA
-```
+리뷰 후 PR을 머지하면 배포가 진행됩니다.
 
-### Step 3: 커밋 & 푸시
-
-```bash
-cd infra-medicare
-
-git add k8s/overlays/prod/kustomization.yaml
-
-git commit -m "ci: update image tags to sha-a1b2c3d4, sha-e5f6g7h8, sha-i9j0k1l2"
-
-git push origin main
-```
-
-### Step 4: ArgoCD 동기화 확인
+### Step 3: ArgoCD 동기화 확인
 
 ```bash
 # ArgoCD가 자동으로 감지해 배포
@@ -822,7 +797,28 @@ NAME              SYNC STATUS   HEALTH STATUS
 medical-service   Synced        Healthy
 ```
 
+### 참고: 수동 업데이트가 필요한 경우
+
+아래 경우에는 임시로 수동 업데이트를 사용할 수 있습니다.
+
+- 서비스/인프라 레포 분리로 인해 CI가 인프라 파일을 직접 갱신하지 못할 때
+- PR 자동 생성 권한(`contents: write`, `pull-requests: write`)이 제한될 때
+- 긴급 롤백/핫픽스로 특정 태그를 즉시 고정해야 할 때
+
 ---
+### 남은 개발순서
+1️⃣ POST_CLONE_SETUP.md
+   ├─ Phase 1: 각 서비스 Docker 빌드 테스트 (AI, Backend, Frontend)
+   ├─ Phase 2: Docker Compose 통합 테스트
+   └─ Phase 3: 배포 설정 파일 검토 & 기록
+
+2️⃣ 모두 완료 후 → EKS 설치 준비
+
+3️⃣ AFTER_EKS.md 참고
+   ├─ Step 1: EKS 클러스터 생성 (terraform apply)
+   ├─ Step 2: kubeconfig 연결
+   ├─ Step 3: ArgoCD 설치
+   └─ Step 4~8: 배포 완료
 
 ## 모니터링 및 로깅
 

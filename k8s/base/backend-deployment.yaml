@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: backend
-          image: <BACKEND_IMAGE_PLACEHOLDER>
+          image: medical-service-backend
           env:
             # ConfigMap에서 가져올 환경 변수
             - name: LOG_LEVEL

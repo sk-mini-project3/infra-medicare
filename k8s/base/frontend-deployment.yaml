@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: <FRONTEND_IMAGE_PLACEHOLDER>
+          image: medical-service-frontend
           env:
             - name: REACT_APP_API_BASE
               valueFrom:

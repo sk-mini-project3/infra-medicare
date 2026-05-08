@@ -47,13 +47,16 @@ if [ -n "$IMAGE_TAGS_FILE" ] && [ -f "$IMAGE_TAGS_FILE" ]; then
         # kustomization.yaml의 newTag 업데이트
         case "$service" in
             frontend)
-                sed -i "s/<FRONTEND_IMAGE_PLACEHOLDER>-tag:.*/newTag: \"$tag\"/" "$KUSTOMIZATION_PATH/kustomization.yaml" || true
+                sed -i.bak "/name: medical-service-frontend/,/newTag:/ s/newTag: .*/newTag: \"$tag\"/" "$KUSTOMIZATION_PATH/kustomization.yaml" || true
+                rm -f "$KUSTOMIZATION_PATH/kustomization.yaml.bak"
                 ;;
             backend)
-                sed -i "s/<BACKEND_IMAGE_PLACEHOLDER>-tag:.*/newTag: \"$tag\"/" "$KUSTOMIZATION_PATH/kustomization.yaml" || true
+                sed -i.bak "/name: medical-service-backend/,/newTag:/ s/newTag: .*/newTag: \"$tag\"/" "$KUSTOMIZATION_PATH/kustomization.yaml" || true
+                rm -f "$KUSTOMIZATION_PATH/kustomization.yaml.bak"
                 ;;
             ai)
-                sed -i "s/<AI_IMAGE_PLACEHOLDER>-tag:.*/newTag: \"$tag\"/" "$KUSTOMIZATION_PATH/kustomization.yaml" || true
+                sed -i.bak "/name: medical-service-ai/,/newTag:/ s/newTag: .*/newTag: \"$tag\"/" "$KUSTOMIZATION_PATH/kustomization.yaml" || true
+                rm -f "$KUSTOMIZATION_PATH/kustomization.yaml.bak"
                 ;;
         esac
     done < "$IMAGE_TAGS_FILE"

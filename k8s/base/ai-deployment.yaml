@@ -16,7 +16,7 @@ spec:
     spec:
       containers:
         - name: ai
-          image: <AI_IMAGE_PLACEHOLDER>
+          image: medical-service-ai
           env:
             - name: LOG_LEVEL
               valueFrom:
