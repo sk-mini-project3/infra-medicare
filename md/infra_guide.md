@@ -573,7 +573,7 @@ spec:
               name: db-credentials
               key: password
         - name: AI_BASE_URL
-          value: "http://ai:8000"
+          value: "http://ai:8001"
         resources:
           requests:
             memory: "512Mi"
@@ -613,7 +613,7 @@ spec:
       - name: ai
         image: medical-service-ai
         ports:
-        - containerPort: 8000
+        - containerPort: 8001
         env:
         - name: LOG_LEVEL
           value: "INFO"
@@ -627,12 +627,12 @@ spec:
         livenessProbe:
           httpGet:
             path: /health
-            port: 8000
+            port: 8001
           initialDelaySeconds: 20
         readinessProbe:
           httpGet:
             path: /health/ready
-            port: 8000
+            port: 8001
           initialDelaySeconds: 10
 ```
 
@@ -651,7 +651,7 @@ metadata:
 
 data:
   LOG_LEVEL: "DEBUG"
-  AI_BASE_URL: "http://ai:8000"
+  AI_BASE_URL: "http://ai:8001"
   BACKEND_API_URL: "http://backend:8080"
 ```
 
@@ -694,7 +694,7 @@ services:
       - DATABASE_URL=jdbc:mysql://mysql:3306/medicalservicedb
       - DATABASE_USER=root
       - DATABASE_PASSWORD=rootpassword
-      - AI_BASE_URL=http://ai:8000
+      - AI_BASE_URL=http://ai:8001
     depends_on:
       - mysql
       - ai
@@ -709,11 +709,11 @@ services:
       context: ../ai-medicare
       dockerfile: Dockerfile
     ports:
-      - "8001:8000"
+      - "8001:8001"
     environment:
       - LOG_LEVEL=DEBUG
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
       interval: 10s
       timeout: 5s
       retries: 5

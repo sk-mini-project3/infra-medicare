@@ -1,4 +1,37 @@
+# Dev 환경 Kustomization
+# 개발 환경용 설정: 로컬 이미지, 작은 replica, localhost 기반 API
+
 resources:
   - ../../base
 
-patchesStrategicMerge: []
+# 개발용 ConfigMap 오버라이드 (로컬 테스트용)
+configMapGenerator:
+  - name: app-config
+    behavior: merge
+    literals:
+      - LOG_LEVEL=DEBUG
+      - AI_BASE_URL=http://localhost:8001
+      - BACKEND_API_URL=http://localhost:3000
+      - FRONTEND_API_BASE=http://localhost:3000
+
+# 개발용 이미지 설정
+# 로컬에서 docker build -t {이미지명}:local로 빌드한 이미지 사용
+images:
+  - name: <FRONTEND_IMAGE_PLACEHOLDER>
+    newName: medical-service-frontend
+    newTag: local
+  - name: <BACKEND_IMAGE_PLACEHOLDER>
+    newName: medical-service-backend
+    newTag: local
+  - name: <AI_IMAGE_PLACEHOLDER>
+    newName: medical-service-ai
+    newTag: local
+
+# 개발용 리소스 스케일 조정
+replicas:
+  - name: frontend
+    count: 1
+  - name: backend
+    count: 1
+  - name: ai
+    count: 1

@@ -277,6 +277,28 @@ ip-10-0-11-xxx.ap-northeast-2.compute.internal   Ready    <none>   2m    v1.27.x
 ip-10-0-12-xxx.ap-northeast-2.compute.internal   Ready    <none>   2m    v1.27.x
 ```
 
+### 4-3. DB Secret 생성 (실제 값 주입 위치)
+
+`k8s/base/secret.yaml`에는 실제 비밀번호를 적지 않습니다. DB 접속 정보는 EKS에 Secret으로 주입합니다.
+
+```bash
+# terraform output에서 Aurora 엔드포인트 확인
+RDS_ENDPOINT=$(terraform -chdir=medical-service-infra/terraform output -raw rds_address)
+
+# 실제 값은 로컬 터미널에서만 입력
+DB_NAME=medicalservicedb
+DB_USERNAME=admin
+DB_PASSWORD='여기에_실제_비밀번호'
+
+kubectl create secret generic db-credentials \
+  --namespace default \
+  --from-literal=DB_USERNAME="$DB_USERNAME" \
+  --from-literal=DB_PASSWORD="$DB_PASSWORD" \
+  --from-literal=DATABASE_URL="mysql://${DB_USERNAME}:${DB_PASSWORD}@${RDS_ENDPOINT}:3306/${DB_NAME}"
+```
+
+이미 `k8s/base/secret.yaml`를 적용할 계획이면, 위 명령으로 만든 Secret이 우선 사용되도록 하거나, 배포 전에 `secret.yaml`을 `kubectl apply` 하지 말고 Secret 생성 명령만 사용하세요. 값이 들어간 Secret 파일을 GitHub에 커밋하면 안 됩니다.
+
 ---
 
 ## Phase 5. GitHub 설정
@@ -309,6 +331,8 @@ git clone https://github.com/YOUR_ORG/infra-medicare.git
 - **AWS_SECRET_ACCESS_KEY**: IAM 사용자의 시크릿 키
 - **ECR_URI 패턴**: `{AWS_ACCOUNT_ID}.dkr.ecr.ap-northeast-2.amazonaws.com/{REPO_NAME}`
 
+**중요:** 여기서 등록하는 값은 Docker 이미지 빌드/푸시용 GitHub Secrets입니다. DB 접속 정보(DB_USERNAME, DB_PASSWORD, DATABASE_URL)는 backend가 Kubernetes에서 실행될 때 쓰는 런타임 값이므로, [k8s/base/secret.yaml](../k8s/base/secret.yaml) 같은 Kubernetes Secret으로 관리합니다. 현재 구조에서는 AI 서비스가 DB를 직접 사용하지 않으므로 DB 시크릿이 필요하지 않습니다.
+
 #### ① `frontend-medicare` 레포
 
 ```
@@ -320,7 +344,7 @@ ECR_REPOSITORY                 = medical-service-frontend
 
 **CI에서 사용되는 형태:**
 ```
-ECR_URI = 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-frontend
+ECR_URI = 296336226405.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-frontend
 ```
 
 #### ② `backend-medicare` 레포
@@ -334,7 +358,7 @@ ECR_REPOSITORY                 = medical-service-backend
 
 **CI에서 사용되는 형태:**
 ```
-ECR_URI = 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-backend
+ECR_URI = 296336226405.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-backend
 ```
 
 #### ③ `ai-medicare` 레포
@@ -348,7 +372,7 @@ ECR_REPOSITORY                 = medical-service-ai
 
 **CI에서 사용되는 형태:**
 ```
-ECR_URI = 123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-ai
+ECR_URI = 296336226405.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-ai
 ```
 
 #### ④ `infra-medicare` 레포
@@ -381,10 +405,10 @@ terraform output ecr_ai_repository
 
 **출력 예시:**
 ```
-Account:              123456789012
-ECR_URI (frontend):   123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-frontend
-ECR_URI (backend):    123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-backend
-ECR_URI (ai):         123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-ai
+Account:              296336226405
+ECR_URI (frontend):   296336226405.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-frontend
+ECR_URI (backend):    296336226405.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-backend
+ECR_URI (ai):         296336226405.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-ai
 ```
 
 ### 5-3. 코드 푸시
@@ -399,6 +423,38 @@ git push origin main
 
 # 유사하게 backend, ai도 푸시
 ```
+
+### 5-3-1. GitHub Actions 전에 Docker 로컬 확인
+
+GitHub Actions가 돌기 전에 각 서비스 이미지를 로컬에서 한 번씩 빌드/실행해보면, Dockerfile이나 실행 환경 문제를 먼저 잡을 수 있습니다.
+
+```bash
+# frontend
+cd frontend-medicare
+docker build -t medical-service-frontend:local .
+docker run --rm -p 8080:80 medical-service-frontend:local
+
+# backend
+cd ../backend-medicare
+docker build -t medical-service-backend:local .
+docker run --rm -p 3000:3000 \
+  -e LOG_LEVEL=info \
+  -e AI_BASE_URL=http://host.docker.internal:8001 \
+  -e DATABASE_URL="mysql://admin:password@host.docker.internal:3306/medicalservicedb" \
+  -e DB_USERNAME=admin \
+  -e DB_PASSWORD=password \
+  medical-service-backend:local
+
+# ai
+cd ../ai-medicare
+docker build -t medical-service-ai:local .
+docker run --rm -p 8001:8001 \
+  -e LOG_LEVEL=info \
+  -e BACKEND_API_URL=http://host.docker.internal:3000 \
+  medical-service-ai:local
+```
+
+필요하면 `docker run` 대신 `docker compose up`으로 묶어서 실행해도 됩니다. 핵심은 GitHub Actions로 올리기 전에 각 이미지가 로컬에서 정상 기동하는지 확인하는 것입니다.
 
 ### 5-4. CI 실행 확인
 

@@ -1,3 +1,7 @@
+# Base Kustomization
+# 모든 환경의 공통 Kubernetes 리소스 정의
+# 이 파일의 이미지/설정은 placeholder이고, 실제 값은 overlays에서 오버라이드됨
+
 resources:
   - configmap.yaml
   - secret.yaml
@@ -8,6 +12,8 @@ resources:
   - ai-service.yaml
   - ingress.yaml
 
+# 이미지 치환 설정 (placeholder)
+# overlays/dev와 overlays/prod에서 실제 이미지 주소로 오버라이드됨
 images:
   - name: <FRONTEND_IMAGE_PLACEHOLDER>
     newTag: "latest"
