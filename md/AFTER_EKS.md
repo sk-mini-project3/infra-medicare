@@ -55,6 +55,8 @@ kubectl create secret generic db-credentials \
   --from-literal=DB_PASSWORD='실제_비밀번호_입력' \
   --from-literal=DATABASE_URL="jdbc:mysql://admin:실제_비밀번호_입력@${RDS_ENDPOINT}:3306/medicalservicedb"
 
+kubectl create secret generic db-credentials --from-literal=DB_USERNAME='admin' --from-literal=DB_PASSWORD='admin123$' --from-literal=DB_URL='jdbc:mysql://medical-service-aurora-1.c3iagyqq461m.ap-northeast-2.rds.amazonaws.com:3306/medicalservicedb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=UTF-8' --from-literal=REDIS_PASSWORD='' --from-literal=JWT_SECRET='0hv4E/kbqPEXkEIfn9DMG7YXuLew0XYvMrOYWCCngHI=' --from-literal=ENCRYPTION_KEY='defaultkeyfordevonly1234567890ab' -n default
+
 # 확인
 kubectl get secret db-credentials -o jsonpath='{.data.DB_USERNAME}' | base64 -d
 ```
