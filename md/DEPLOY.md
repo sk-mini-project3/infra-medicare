@@ -575,29 +575,225 @@ aws ecr describe-images \
   --output table
 ```
 
-### 7-2. 이미지 태그 수동 업데이트
+### 7-2. 이미지 태그 수동 업데이트 (권장: 처음에는 수동으로 학습)
 
+#### Step 1️⃣: 현재 kustomization.yaml 확인
 
-`kustomization.yaml` 이미지 태그 자동화 (PR 기반)
+```bash
+cat k8s/overlays/prod/kustomization.yaml | grep -A 10 "images:"
+```
 
-CI가 각 서비스의 이미지를 빌드·푸시하면, 서비스별 GitHub Actions 워크플로가 자동으로
-`medical-service-infra/k8s/overlays/prod/kustomization.yaml`의 해당 서비스 이미지(`frontend`, `backend`, `ai`) `newName`과 `newTag`를
-업데이트한 브랜치를 생성하고 해당 변경을 포함한 Pull Request를 자동으로 만듭니다.
+**현재 상태 예시:**
+```yaml
+images:
+- name: medical-service-frontend
+  newName: 123456789.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-frontend
+  newTag: latest  # ← 이 부분을 수정할 것
 
-자동화 동작 요약:
+- name: medical-service-backend
+  newName: 123456789.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-backend
+  newTag: latest  # ← 이 부분을 수정할 것
 
-- 빌드 성공 → 이미지 푸시 → 워크플로가 `kustomization.yaml`을 업데이트한 브랜치 생성 → PR 생성
-- PR이 머지되면 ArgoCD가 변경을 감지하고 배포를 수행합니다.
+- name: ai-medicare
+  newName: 123456789.dkr.ecr.ap-northeast-2.amazonaws.com/ai-medicare
+  newTag: latest  # ← 이 부분을 수정할 것
+```
 
-장점 및 주의사항:
+#### Step 2️⃣: ECR에서 최신 이미지 태그 확인
 
-- 브랜치 보호가 활성화된 리포지토리에서도 동작합니다(자동 푸시 권한 불필요).  
-- PR을 통해 변경 내역 리뷰·CI를 통과한 후 배포하도록 워크플로를 설계했습니다.  
-- 자동 업데이트는 빌드된 이미지가 레지스트리에 정상적으로 푸시된 이후에 동작합니다.
+```bash
+# Frontend 이미지 확인
+aws ecr describe-images \
+  --repository-name medical-service-frontend \
+  --region ap-northeast-2 \
+  --query 'imageDetails[0].[imageTags[0],imagePushedAt]' \
+  --output text
 
+# Backend 이미지 확인
+aws ecr describe-images \
+  --repository-name medical-service-backend \
+  --region ap-northeast-2 \
+  --query 'imageDetails[0].[imageTags[0],imagePushedAt]' \
+  --output text
 
+# AI 이미지 확인
+aws ecr describe-images \
+  --repository-name ai-medicare \
+  --region ap-northeast-2 \
+  --query 'imageDetails[0].[imageTags[0],imagePushedAt]' \
+  --output text
+```
 
-### 7-3. ArgoCD 동기화 확인
+**출력 예시:**
+```
+a1b2c3d4e5f6    2026-05-08 10:30:00+00:00
+```
+
+> **📌 주의**: "latest" 절대 사용 금지! 반드시 SHA 태그 (a1b2c3d4 형태) 사용
+
+#### Step 3️⃣: kustomization.yaml 수동 업데이트
+
+```bash
+# 에디터로 파일 열기
+code k8s/overlays/prod/kustomization.yaml
+
+# 또는 sed로 직접 수정 (예시)
+sed -i 's/newTag: latest/newTag: a1b2c3d4/g' k8s/overlays/prod/kustomization.yaml
+```
+
+**수정 후 결과:**
+```yaml
+images:
+- name: medical-service-frontend
+  newName: 123456789.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-frontend
+  newTag: a1b2c3d4  # ✅ 수정됨
+
+- name: medical-service-backend
+  newName: 123456789.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-backend
+  newTag: b2c3d4e5  # ✅ 수정됨
+
+- name: ai-medicare
+  newName: 123456789.dkr.ecr.ap-northeast-2.amazonaws.com/ai-medicare
+  newTag: c3d4e5f6  # ✅ 수정됨
+```
+
+#### Step 4️⃣: 변경사항 커밋 & 푸시
+
+```bash
+cd medical-service-infra
+
+git add k8s/overlays/prod/kustomization.yaml
+
+git commit -m "chore: update image tags for production
+
+- frontend: a1b2c3d4
+- backend: b2c3d4e5
+- ai: c3d4e5f6"
+
+git push origin main
+```
+
+#### Step 5️⃣: ArgoCD 자동 감지 & 배포
+
+Git에 푸시되면 ArgoCD가 자동으로 변경을 감지하고 배포합니다.
+
+```bash
+# 배포 상태 확인
+kubectl get application medical-service -n argocd -w
+```
+
+**예상 출력:**
+```
+NAME              SYNC STATUS   HEALTH STATUS
+medical-service   Syncing       Progressing  → Synced / Healthy
+```
+
+---
+
+### 7-3. 자동화 설정 (선택사항: 나중에 추가)
+
+이 단계는 **수동 배포가 안정적으로 작동한 후**에 추가하는 것을 권장합니다.
+
+#### 자동화 방식 개요
+
+CI (각 서비스 리포)에서:
+- 이미지 빌드 & ECR 푸시 (자동)
+
+인프라 리포의 자동 워크플로우:
+- `kustomization.yaml` 자동 업데이트 (자동)
+- PR 자동 생성 (자동)
+- PR 머지 후 ArgoCD 배포 (자동)
+
+#### 자동화 구현 방법
+
+**1단계: GitHub Actions 워크플로우 생성**
+
+각 서비스 리포에 `.github/workflows/update-infra.yml` 추가:
+
+```yaml
+name: Update Infrastructure Image Tag
+
+on:
+  workflow_run:
+    workflows: ["CI/CD"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  update-image:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout infra repo
+        uses: actions/checkout@v3
+        with:
+          repository: sk-mini-project3/infra-medicare
+          token: ${{ secrets.GH_PAT }}
+          ref: main
+
+      - name: Update image tag
+        run: |
+          REPO_NAME=${{ github.event.repository.name }}
+          COMMIT_SHA=${{ github.event.workflow_run.head_commit.id }}
+          
+          # 서비스명 매핑
+          case "$REPO_NAME" in
+            medical-service-frontend) SERVICE="medical-service-frontend" ;;
+            medical-service-backend) SERVICE="medical-service-backend" ;;
+            ai-medicare) SERVICE="ai-medicare" ;;
+          esac
+          
+          # kustomization.yaml 업데이트
+          sed -i "/- name: $SERVICE/,/newTag:/ s/newTag: .*/newTag: ${COMMIT_SHA:0:8}/" \
+            k8s/overlays/prod/kustomization.yaml
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v4
+        with:
+          token: ${{ secrets.GH_PAT }}
+          commit-message: "ci: bump ${{ env.SERVICE }} image to ${{ github.event.workflow_run.head_commit.id }}"
+          branch: ci/update-${{ env.SERVICE }}-${{ github.run_number }}
+          title: "ci: Update ${{ env.SERVICE }} image tag"
+          labels: auto-update,dependencies
+```
+
+**2단계: GitHub Personal Access Token (PAT) 생성**
+
+1. GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
+2. "New token (classic)" 클릭
+3. Scopes 선택:
+   - `repo` (전체)
+   - `workflow`
+4. Token 복사 후 각 서비스 리포 Secrets에 `GH_PAT`로 등록
+
+**3단계: 인프라 리포 브랜치 보호 설정**
+
+1. infra-medicare → Settings → Branches
+2. "Add rule" → Branch name pattern: `main`
+3. "Require pull request reviews before merging" 체크
+4. "Require status checks to pass" 체크
+
+**4단계: PR 자동 머지 설정 (선택)**
+
+```bash
+# GitHub CLI 설치 후
+gh pr merge --auto --squash
+```
+
+#### 자동화 장점
+- 수동 실수 방지
+- 배포 속도 개선
+- Git 이력 자동 기록
+
+#### 자동화 주의사항
+- PAT 만료 전에 갱신 필요
+- PR 리뷰 정책 결정 필요 (자동 머지 vs 수동 리뷰)
+- 긴급 롤백 시 수동 개입 필요
+
+---
+
+### 7-4. ArgoCD 동기화 확인
 
 ArgoCD 콘솔 또는 CLI에서 동기화 상태 확인:
 

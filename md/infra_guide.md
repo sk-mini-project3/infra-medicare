@@ -744,51 +744,236 @@ docker-compose down
 
 ---
 
-## 이미지 태그 자동 업데이트 (PR 기반)
+## 이미지 배포 전략: 수동 → 자동화
 
-### 절차 개요
+### 개요
 
-1. 서비스 CI가 이미지를 빌드해 ECR에 푸시 (자동)
-2. 워크플로가 `k8s/overlays/prod/kustomization.yaml`의 `images[].newName/newTag` 갱신 (자동)
-3. 변경 내용을 `ci/update-<service>-<sha>` 브랜치로 만들고 PR 생성 (자동)
-4. PR 머지 후 ArgoCD가 Git 변경을 감지해 자동 배포 (자동)
+이미지 배포 방식을 두 가지로 지원합니다:
 
-### Step 1: ECR 이미지 확인
+1. **수동 업데이트** (권장: 처음에는 이 방식으로 학습)
+   - 개발자가 직접 `kustomization.yaml` 수정
+   - 간단하고 명확한 프로세스
+   - 배포 과정을 완전히 이해 가능
+
+2. **자동 업데이트** (선택사항: 수동이 안정화 후 추가)
+   - GitHub Actions가 자동으로 PR 생성
+   - 수동 실수 제거
+   - 배포 속도 향상
+
+### 방식 1️⃣: 수동 이미지 태그 업데이트 (권장)
+
+#### Step 1: ECR에서 최신 이미지 태그 확인
 
 ```bash
+# 각 서비스별 최신 이미지 확인
 aws ecr describe-images \
   --repository-name medical-service-frontend \
   --region ap-northeast-2 \
-  --query 'imageDetails[*].[imageTags,imagePushedAt]' \
-  --output table
+  --query 'imageDetails[0].[imageTags[0],imagePushedAt]' \
+  --output text
+
+# 출력 예시:
+# a1b2c3d4e5f6    2026-05-08T10:30:00+00:00
 ```
 
-**출력 예시:**
-```
-imageTags       imagePushedAt
-───────────────────────────────
-['sha-a1b2c3d4']   2026-05-07 10:30:00+00:00
-```
-
-### Step 2: 자동 생성된 PR 확인 및 머지
-
-서비스 레포 Actions 실행이 끝나면 자동으로 생성된 PR을 확인합니다.
-
-- 브랜치 예시: `ci/update-frontend-<github_sha>`
-- 커밋 메시지 예시: `ci: bump frontend image to <github_sha> [skip ci]`
-- 변경 파일: `k8s/overlays/prod/kustomization.yaml`
-
-리뷰 후 PR을 머지하면 배포가 진행됩니다.
-
-### Step 3: ArgoCD 동기화 확인
+#### Step 2: kustomization.yaml 수동 수정
 
 ```bash
-# ArgoCD가 자동으로 감지해 배포
+# 현재 파일 확인
+cat k8s/overlays/prod/kustomization.yaml | grep -A 2 "images:"
+
+# 에디터로 열기
+code k8s/overlays/prod/kustomization.yaml
+```
+
+**수정 전:**
+```yaml
+images:
+- name: medical-service-frontend
+  newTag: latest  # ← 변경 필요
+```
+
+**수정 후:**
+```yaml
+images:
+- name: medical-service-frontend
+  newTag: a1b2c3d4  # ← SHA 태그로 변경
+```
+
+> **📌 중요**: "latest" 절대 금지! 반드시 8자리 SHA 사용
+
+#### Step 3: Git에 커밋 & 푸시
+
+```bash
+git add k8s/overlays/prod/kustomization.yaml
+
+git commit -m "chore: update image tags for production
+
+- frontend: a1b2c3d4
+- backend: b2c3d4e5
+- ai: c3d4e5f6"
+
+git push origin main
+```
+
+#### Step 4: ArgoCD 자동 배포 확인
+
+```bash
+# 배포 상태 모니터링
+kubectl get application medical-service -n argocd -w
+
+# Pod 상태 확인
+kubectl get pods
+kubectl describe pod [POD_NAME]
+```
+
+**장점:**
+- 프로세스 이해하기 쉬움
+- 각 배포 단계를 명확히 확인
+- 긴급 상황에서 빠르게 대응 가능
+- 자동화 도구 의존성 없음
+
+---
+
+### 방식 2️⃣: 자동 이미지 태그 업데이트 (선택사항)
+
+> ⏸️ **타이밍**: 수동 배포가 **안정적으로 작동한 후** 추가하기를 권장합니다.
+
+#### 자동화 흐름
+
+```
+① 서비스 CI 완료 (Docker 빌드 & ECR 푸시)
+   ↓
+② 인프라 repo 워크플로우 트리거
+   ↓
+③ kustomization.yaml 자동 수정
+   ↓
+④ PR 자동 생성
+   ↓
+⑤ PR 머지 (수동 또는 자동)
+   ↓
+⑥ ArgoCD 감지 후 배포
+```
+
+#### 구현 방법
+
+**1단계: 각 서비스 리포에 워크플로우 추가**
+
+`.github/workflows/update-image-tag.yml` 생성:
+
+```yaml
+name: Update Image Tag
+
+on:
+  workflow_run:
+    workflows: ["CI/CD"]  # 서비스 빌드 완료 후 트리거
+    types: [completed]
+    branches: [main]
+
+jobs:
+  update-tag:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          repository: sk-mini-project3/infra-medicare
+          token: ${{ secrets.GH_PAT }}
+          ref: main
+
+      - name: Update kustomization.yaml
+        run: |
+          SERVICE_NAME=${{ github.event.repository.name }}
+          NEW_TAG=${{ github.event.workflow_run.head_commit.id }}
+          SHORT_SHA=${NEW_TAG:0:8}
+          
+          # 서비스명 매핑
+          case "$SERVICE_NAME" in
+            medical-service-frontend) SERVICE_KEY="medical-service-frontend" ;;
+            medical-service-backend) SERVICE_KEY="medical-service-backend" ;;
+            ai-medicare) SERVICE_KEY="ai-medicare" ;;
+          esac
+          
+          # kustomization.yaml 업데이트
+          sed -i "/- name: $SERVICE_KEY/,/newTag:/ s/newTag: .*/newTag: $SHORT_SHA/" \
+            k8s/overlays/prod/kustomization.yaml
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          token: ${{ secrets.GH_PAT }}
+          commit-message: "ci: update $SERVICE_KEY image to $SHORT_SHA"
+          branch: ci/update-$SERVICE_KEY-${{ github.run_number }}
+          title: "ci: Update image tag for $SERVICE_KEY"
+          body: |
+            Automated image tag update
+            - Service: ${{ github.event.repository.name }}
+            - Tag: $SHORT_SHA
+          labels: auto-update
+```
+
+**2단계: GitHub Personal Access Token 생성 및 등록**
+
+1. GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)
+2. "New token (classic)" 클릭
+3. Scopes 선택:
+   - `repo` (모든 권한)
+   - `workflow`
+4. Token 생성 후 각 서비스 리포 → Settings → Secrets → `GH_PAT` 등록
+
+**3단계: 인프라 리포 설정**
+
+```bash
+# 브랜치 보호 규칙 설정 (GitHub UI에서)
+# Settings → Branches → Add rule
+# - Branch: main
+# - Require pull request reviews
+# - Dismiss stale PR approvals
+# - Require status checks to pass
+# - Require branches to be up to date
+```
+
+**4단계: PR 자동 머지 (선택)**
+
+```yaml
+- name: Auto merge PR
+  if: success()
+  run: gh pr merge --auto --squash
+  env:
+    GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+```
+
+#### 자동화 장점
+- 수동 실수 제거 (태그 오타, 버전 누락)
+- 배포 속도 향상
+- Git 이력 자동 기록
+- 야간/주말 배포 자동화 가능
+
+#### 자동화 주의사항
+- **PAT 만료**: 분기별 갱신 필요
+- **권한 관리**: 최소 권한 원칙 준수
+- **PR 리뷰**: 자동 머지보다 수동 리뷰 권장
+- **긴급 상황**: 수동 개입 필요 (롤백 등)
+
+---
+
+### ArgoCD 자동 배포 확인
+
+PR이 머지되거나 `kustomization.yaml`이 수정되면 ArgoCD가 자동으로 감지합니다:
+
+```bash
+# Application 상태 확인
 kubectl get application medical-service -n argocd
 
-# Pod 롤링 업데이트 확인
-kubectl get pods
-kubectl logs deployment/frontend
+# 동기화 상태 상세 확인
+kubectl describe application medical-service -n argocd
+
+# Pod 롤링 업데이트 모니터링
+kubectl get pods -w
+
+# 배포 로그 확인
+kubectl logs -f deployment/frontend
 ```
 
 **예상 상태:**
@@ -797,15 +982,36 @@ NAME              SYNC STATUS   HEALTH STATUS
 medical-service   Synced        Healthy
 ```
 
-### 참고: 수동 업데이트가 필요한 경우
+---
 
-아래 경우에는 임시로 수동 업데이트를 사용할 수 있습니다.
+## 이미지 태그 전략
 
-- 서비스/인프라 레포 분리로 인해 CI가 인프라 파일을 직접 갱신하지 못할 때
-- PR 자동 생성 권한(`contents: write`, `pull-requests: write`)이 제한될 때
-- 긴급 롤백/핫픽스로 특정 태그를 즉시 고정해야 할 때
+### SHA 태그 사용 이유
+
+```yaml
+# ❌ 안 좋은 예: "latest"
+image: ecr.../medical-service-frontend:latest
+→ 어떤 코드가 실행 중인지 알 수 없음
+→ 이전 버전으로 롤백 불가능
+
+# ✅ 좋은 예: SHA
+image: ecr.../medical-service-frontend:a1b2c3d4
+→ GitHub commit과 1:1 매핑
+→ 정확한 코드 추적 가능
+→ 특정 버전으로 즉시 롤백 가능
+```
+
+### 태그 라이프사이클
+
+| 단계 | 태그 | 용도 |
+|------|------|------|
+| 개발 | `latest` | 로컬 docker-compose |
+| CI 빌드 | `a1b2c3d4...` (SHA) | ECR에 저장 |
+| 프로덕션 | `a1b2c3d4...` (SHA) | Kustomize에서 사용 |
+| 롤백 | 이전 SHA | ArgoCD에서 이전 커밋으로 체크아웃 |
 
 ---
+
 ### 남은 개발순서
 1️⃣ POST_CLONE_SETUP.md
    ├─ Phase 1: 각 서비스 Docker 빌드 테스트 (AI, Backend, Frontend)
