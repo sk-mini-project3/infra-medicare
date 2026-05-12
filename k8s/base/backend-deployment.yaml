@@ -40,11 +40,11 @@ spec:
                   name: app-config
                   key: REDIS_PORT
             # Secret에서 가져올 민감한 정보
-            - name: DB_URL
+            - name: SPRING_DATASOURCE_URL
               valueFrom:
                 secretKeyRef:
                   name: db-credentials
-                  key: DB_URL
+                  key: SPRING_DATASOURCE_URL
             - name: DB_USERNAME
               valueFrom:
                 secretKeyRef:
@@ -80,16 +80,14 @@ spec:
               cpu: 1000m
               memory: 1Gi
           livenessProbe:
-            httpGet:
-              path: /api/health
+            tcpSocket:
               port: 3000
             initialDelaySeconds: 30
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3
           readinessProbe:
-            httpGet:
-              path: /api/health
+            tcpSocket:
               port: 3000
             initialDelaySeconds: 15
             periodSeconds: 5

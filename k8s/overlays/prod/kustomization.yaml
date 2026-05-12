@@ -15,6 +15,7 @@ configMapGenerator:
       - LOG_LEVEL=INFO
       - AI_BASE_URL=http://ai-service:80
       - BACKEND_API_URL=http://backend-service:80
+      - NEXT_PUBLIC_API_URL=http://backend-service:80
       - FRONTEND_API_BASE=http://backend-service:80
       # 운영 배포 시 실제 Redis 엔드포인트로 변경하세요.
       # ElastiCache를 쓰면 cache endpoint, K8s Redis를 쓰면 redis-service로 바꾸면 됩니다.
@@ -56,10 +57,17 @@ patchesStrategicMerge:
         - host: "YOUR_DOMAIN.com"  # ← 실제 도메인으로 변경
           http:
             paths:
-              - path: /
+              - path: /api
                 pathType: Prefix
                 backend:
                   service:
                     name: backend-service
+                    port:
+                      number: 80
+              - path: /
+                pathType: Prefix
+                backend:
+                  service:
+                    name: frontend-service
                     port:
                       number: 80

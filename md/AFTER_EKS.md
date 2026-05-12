@@ -7,6 +7,16 @@
 
 ## Step 1. EKS 클러스터 생성 (Phase 4)
 
+### 배포 전에 맞춰둘 항목
+
+- Namespace: `medical-service` (prod 기준)
+- Service type: `frontend-service` / `backend-service` / `ai-service` = `ClusterIP`, `redis-service` = `ClusterIP`
+- Ingress: `/api`는 backend, `/`는 frontend
+- 이미지 태그 전략: `github.sha` 기반 태그를 ECR에 푸시한 뒤 `kustomization.yaml`의 `newTag`에 반영
+- 백엔드 환경변수: `DB_URL`, `DB_USERNAME`, `DB_PASSWORD`, `REDIS_HOST`, `REDIS_PORT`, `REDIS_PASSWORD`, `JWT_SECRET`, `ENCRYPTION_KEY`
+- 프론트 환경변수: `REACT_APP_API_BASE`, `NODE_ENV`
+- AI 환경변수: `LOG_LEVEL`, `BACKEND_API_URL`
+
 ### 1-1. Terraform Phase 2 Apply
 
 ```bash
@@ -48,18 +58,22 @@ ip-10-0-12-xxx.ap-northeast-2.compute.internal   Ready    <none>   2m    v1.27.x
 # RDS Aurora 엔드포인트 확인
 RDS_ENDPOINT=$(cd medical-service-infra/terraform && terraform output -raw rds_address)
 
-# EKS에 Secret 생성
+# EKS에 Secret 생성 (백엔드 + Redis 공용)
 kubectl create secret generic db-credentials \
   --namespace default \
-  --from-literal=DB_USERNAME=admin \
+  --from-literal=DB_USERNAME='admin' \
   --from-literal=DB_PASSWORD='실제_비밀번호_입력' \
-  --from-literal=DATABASE_URL="jdbc:mysql://admin:실제_비밀번호_입력@${RDS_ENDPOINT}:3306/medicalservicedb"
-
-kubectl create secret generic db-credentials --from-literal=DB_USERNAME='admin' --from-literal=DB_PASSWORD='admin123$' --from-literal=DB_URL='jdbc:mysql://medical-service-aurora-1.c3iagyqq461m.ap-northeast-2.rds.amazonaws.com:3306/medicalservicedb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=UTF-8' --from-literal=REDIS_PASSWORD='' --from-literal=JWT_SECRET='0hv4E/kbqPEXkEIfn9DMG7YXuLew0XYvMrOYWCCngHI=' --from-literal=ENCRYPTION_KEY='defaultkeyfordevonly1234567890ab' -n default
+  --from-literal=DB_URL="jdbc:mysql://${RDS_ENDPOINT}:3306/medicalservicedb?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Seoul&characterEncoding=UTF-8" \
+  --from-literal=REDIS_PASSWORD='' \
+  --from-literal=JWT_SECRET='팀에서_받은_256비트_이상_값' \
+  --from-literal=ENCRYPTION_KEY='팀에서_받은_암호화_키' \
+  --dry-run=client -o yaml | kubectl apply -f -
 
 # 확인
 kubectl get secret db-credentials -o jsonpath='{.data.DB_USERNAME}' | base64 -d
 ```
+
+> 참고: 프론트엔드는 `frontend-service`로, 백엔드는 `backend-service`로 붙고, AI는 내부 호출용 `ai-service`를 사용합니다.
 
 ---
 

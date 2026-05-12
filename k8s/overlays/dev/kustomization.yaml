@@ -12,6 +12,7 @@ configMapGenerator:
       - LOG_LEVEL=DEBUG
       - AI_BASE_URL=http://localhost:8001
       - BACKEND_API_URL=http://localhost:3000
+      - NEXT_PUBLIC_API_URL=http://localhost:3000
       - FRONTEND_API_BASE=http://localhost:3000
 
 # 개발용 이미지 설정

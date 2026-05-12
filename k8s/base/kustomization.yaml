@@ -8,6 +8,7 @@ resources:
   - redis-service.yaml
   - redis-deployment.yaml
   - redis-pvc.yaml
+  - frontend-service.yaml
   - frontend-deployment.yaml
   - backend-deployment.yaml
   - ai-deployment.yaml

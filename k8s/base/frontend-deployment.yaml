@@ -18,11 +18,11 @@ spec:
         - name: frontend
           image: medical-service-frontend
           env:
-            - name: REACT_APP_API_BASE
+            - name: NEXT_PUBLIC_API_URL
               valueFrom:
                 configMapKeyRef:
                   name: app-config
-                  key: BACKEND_API_URL
+                  key: NEXT_PUBLIC_API_URL
             - name: NODE_ENV
               valueFrom:
                 configMapKeyRef:

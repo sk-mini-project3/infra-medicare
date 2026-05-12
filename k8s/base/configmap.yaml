@@ -2,7 +2,6 @@ apiVersion: v1
 kind: ConfigMap
 metadata:
   name: app-config
-  namespace: default
   labels:
     app: medical-service
 
@@ -10,6 +9,7 @@ data:
   LOG_LEVEL: "INFO"
   AI_BASE_URL: "http://ai-service:80"
   BACKEND_API_URL: "http://backend-service:80"
+  NEXT_PUBLIC_API_URL: "http://backend-service:80"
   FRONTEND_API_BASE: "http://backend-service:80"
   REDIS_HOST: "redis-service"
   REDIS_PORT: "6379"
