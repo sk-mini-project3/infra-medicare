@@ -1,262 +1,108 @@
 # Medical Service Infrastructure
 
-의료 서비스 플랫폼의 인프라를 관리하는 저장소입니다. 이 레포는 AWS 인프라를 Terraform으로 만들고, Kubernetes 매니페스트와 Argo CD를 통해 서비스 배포 흐름을 관리합니다.
+의료 서비스 플랫폼의 **AWS 인프라와 실제 운영 배포**를 관리하는 저장소입니다. 인프라는 **Terraform**으로 정의하고, 앱은 **EC2에서 Docker로 실행**하며 **Application Load Balancer**로 노출합니다. 코드 반영은 **GitHub Actions → GHCR** 이미지를 **AWS Systems Manager(Run Command)** 로 EC2에 내려 **SSH 없이** 진행합니다.
 
-이 저장소의 핵심 역할은 다음과 같습니다.
-
-- AWS 기반 인프라 코드 관리
-- ECR, VPC, Aurora MySQL, EKS 리소스 생성
-- Kubernetes 기본 매니페스트 및 프로덕션 오버레이 관리
-- Argo CD 기반 GitOps 배포 연결
-- 배포 절차와 체크리스트 문서화
+배포 절차·워크플로·검증 체크리스트 등 **실무 기준 문서**는 **[infra.md](infra.md)** 를 따릅니다.
 
 ---
 
-## 주요 기능
+## 이 레포의 역할
 
-### 인프라 코드
-
-- Terraform으로 모든 AWS 리소스를 선언적으로 관리합니다.
-- Phase 1과 Phase 2로 나누어 인프라를 단계적으로 생성합니다.
-- backend 설정을 통해 Terraform state를 S3와 DynamoDB에 안전하게 보관합니다.
-
-### Kubernetes 배포
-
-- `k8s/base`에는 공통 리소스를 정의합니다.
-- `k8s/overlays/prod`에는 운영 배포용 이미지 태그와 환경 설정을 정의합니다.
-- Kustomize로 서비스별 이미지와 설정을 쉽게 교체할 수 있습니다.
-
-### GitOps
-
-- Argo CD가 Git 저장소 상태를 기준으로 EKS에 자동 동기화합니다.
-- 이미지 태그를 변경한 뒤 Git 커밋만 하면 배포 상태가 따라갑니다.
-
-### 문서화
-
-- `md/DEPLOY.md`: 전체 배포 가이드
-- `md/DEPLOYMENT_CHECKLIST.md`: 배포 체크리스트
-- `md/POST_CLONE_SETUP.md`: 서비스 clone 후 로컬 테스트 가이드
-- `md/AFTER_EKS.md`: EKS 설치 이후 배포 가이드
-- `md/infra_guide.md`: 구조와 개념 중심의 상세 가이드
+- Terraform으로 **VPC, Aurora MySQL, ElastiCache(Redis), ECR, EKS** 등 이 프로젝트에 포함된 AWS 리소스 정의
+- **GHCR** 이미지를 EC2에서 `docker pull` 후 컨테이너 기동·재기동하는 **SSM 배포 스크립트**(`scripts/*.ps1` 등)
+- EC2 부트스트랩 **예시** (루트의 `.aws-userdata-*.sh`), IAM 정책 **예시 JSON** (`examples/aws-iam/`)
+- 배포·아키텍처 요약 문서 (`md/`)
 
 ---
 
-## 기술 스택
+## 배포 흐름(요약)
 
-### Infrastructure
+1. **프론트·백엔드·AI** 각 앱 레포에서 CI 조건에 맞게 푸시 → **GitHub Actions**가 이미지를 **GHCR**에 푸시합니다.
+2. 운영자 PC에서 **AWS CLI**로 대상 계정·리전(예: `ap-northeast-2`) 인증 후, 레포 **`scripts/`** 에서 SSM용 PowerShell 스크립트를 실행해 대상 EC2에 Run Command를 보냅니다.
+3. `medical-backend.env`, `medical-ai.env` 는 로컬에서 최신 연결 정보로 맞춘 뒤 스크립트에 경로를 넘깁니다. **민감값은 Git에 커밋하지 않습니다.**
 
-- Terraform
-- AWS
-- Amazon ECR
-- Amazon VPC
-- Amazon RDS Aurora MySQL
-- Amazon EKS
-- Amazon S3
-- Amazon DynamoDB
-
-### Deployment
-
-- Kubernetes
-- Kustomize
-- Argo CD
-
-### DevOps / Local
-
-- Docker
-- Docker Compose
-- GitHub Actions
-- AWS CLI
-- kubectl
+백엔드·AI·프론트별 명령 예시, 사전 조건(SSM Online, Secrets Manager로 GHCR 로그인 등), 배포 성공 확인은 **[infra.md](infra.md)** 의 **§3·§4** 를 참고합니다.
 
 ---
 
-## 아키텍처 개요
+## 기술 스택(현재 운영 기준)
 
-이 프로젝트는 서비스 레포와 인프라 레포를 분리한 멀티 레포 구조입니다.
+| 구분 | 사용 |
+| --- | --- |
+| 인프라 | Terraform, AWS(VPC, ALB, EC2, Aurora MySQL, ElastiCache, ECR 등) |
+| 이미지 | GitHub Actions, **GitHub Container Registry(GHCR)** |
+| 런타임·진입 | **Docker** on **EC2**, **Application Load Balancer** |
+| 배포 | **AWS Systems Manager** Run Command, **Secrets Manager**(GHCR 자격 등) |
+| 도구 | AWS CLI, **PowerShell**(배포 스크립트) |
 
-```text
-frontend-medicare     backend-medicare     ai-medicare
-	 \                  |                  /
-	  \                 |                 /
-	   \        GitHub Actions CI        /
-	    \        build -> push          /
-	     \              |              /
-	      \             v             /
-		---> Amazon ECR repositories
-			   |
-			   v
-		   Kubernetes on EKS
-			   |
-			   v
-		 Argo CD GitOps sync
-			   |
-			   v
-		   medical-service-infra
-```
+---
 
-### 배포 흐름 요약
+## 아키텍처(한 줄)
 
-1. 각 서비스 레포에 코드가 `main` 브랜치로 푸시됩니다.
-2. GitHub Actions가 Docker 이미지를 빌드합니다.
-3. 이미지를 Amazon ECR에 푸시합니다.
-4. 인프라 레포의 `k8s/overlays/prod/kustomization.yaml`에서 이미지 태그를 갱신합니다.
-5. 인프라 레포에 커밋을 푸시합니다.
-6. Argo CD가 Git 변경을 감지하고 EKS에 동기화합니다.
-7. Kubernetes가 롤링 업데이트를 수행합니다.
+서비스별 앱 레포 → **GitHub Actions** → **GHCR** → 운영자 **SSM Run Command** → **EC2(Docker)** → **ALB** → 사용자. 백엔드는 **Aurora·Redis** 및 환경 변수의 **AI ALB URL** 등과 연결합니다. 상세 그림·설명은 [infra.md](infra.md)입니다.
 
-### 구성요소 역할
+---
 
-- **ECR**: 서비스 이미지 저장소
-- **EKS**: Kubernetes 실행 환경
-- **RDS Aurora**: 백엔드 데이터베이스
-- **VPC**: 퍼블릭/프라이빗 네트워크 분리
-- **Argo CD**: GitOps 배포 자동화
-- **Terraform**: AWS 인프라 관리
+## 문서
+
+| 문서 | 내용 |
+| --- | --- |
+| **[infra.md](infra.md)** | 실제 배포 방식 전체(결정 사항, 구성 요소, 절차, 검증, 보안 메모) |
 
 ---
 
 ## 프로젝트 구조
 
+레포 루트 `medical-service-infra/` 기준입니다.
+
 ```text
 medical-service-infra/
-├── README.md
-├── docker-compose.yml
-├── docker-compose.override.yml
 ├── md/
-│   ├── DEPLOY.md
-│   ├── DEPLOYMENT_CHECKLIST.md
-│   ├── AFTER_EKS.md
-│   ├── POST_CLONE_SETUP.md
-│   └── infra_guide.md
+│   ├── README.md
+│   ├── infra.md
+│   └── EKS_ArgoCD_배포_가이드.md
+├── medical-backend.env
+├── medical-ai.env
+├── examples/
+│   └── aws-iam/                    ← EC2 역할 신뢰·인라인 정책 예시(JSON)
+│       ├── aws-iam-trust-ec2.json
+│       ├── aws-iam-fe-ec2-policy.json
+│       └── aws-iam-backend-ssm-secrets.json
+├── .aws-userdata-plain.sh
+├── .aws-userdata-frontend-docker.sh
 ├── terraform/
 │   ├── backend.tf
+│   ├── provider.tf
+│   ├── versions.tf
+│   ├── variables.tf
+│   ├── terraform.tfvars
+│   ├── vpc.tf
+│   ├── rds.tf
 │   ├── ecr.tf
 │   ├── eks.tf
-│   ├── outputs.tf
-│   ├── provider.tf
-│   ├── rds.tf
-│   ├── variables.tf
-│   ├── versions.tf
-│   ├── vpc.tf
-│   └── terraform.tfvars
+│   └── outputs.tf
 ├── k8s/
 │   ├── base/
-│   │   ├── ai-deployment.yaml
-│   │   ├── ai-service.yaml
-│   │   ├── backend-deployment.yaml
-│   │   ├── configmap.yaml
-│   │   ├── frontend-deployment.yaml
-│   │   ├── ingress.yaml
-│   │   ├── kustomization.yaml
-│   │   ├── secret.yaml
-│   │   └── service.yaml
 │   └── overlays/
 │       ├── dev/
-│       │   └── kustomization.yaml
 │       └── prod/
-│           └── kustomization.yaml
 ├── argocd/
-│   └── application.yaml
+│   ├── application.yaml
+│   └── README.md
 └── scripts/
+    ├── deploy-backend-ssm.ps1
+    ├── deploy-frontend-ssm.ps1
+    ├── deploy-ai-ssm.ps1
+    ├── deploy-backend-ec2-instance-connect.ps1
+    ├── fe-ssm-bootstrap.sh
+    ├── aws-cli-ec2-alb-backend.sh
     ├── deploy.sh
     └── update-image-tags.sh
 ```
 
 ---
 
-## 배포 흐름
-
-### 1. 초기 인프라 준비
-
-최초 1회만 수행합니다.
-
-1. AWS CLI 인증 설정
-2. Terraform state backend용 S3 버킷과 DynamoDB 테이블 생성
-3. Terraform Phase 1 실행: ECR, VPC, Aurora 생성
-4. Terraform Phase 2 실행: EKS 생성
-5. `aws eks update-kubeconfig` 실행
-6. Argo CD 설치 및 접근 설정
-
-### 2. 서비스 개발 완료 후
-
-1. 프론트엔드, 백엔드, AI 레포에 코드 푸시
-2. GitHub Actions가 Docker 이미지를 빌드하고 ECR에 푸시
-3. 인프라 레포의 Kustomize 이미지 태그를 업데이트
-4. 인프라 레포에 커밋 후 푸시
-5. Argo CD가 변경을 감지하고 EKS에 배포
-
-### 3. 운영 중 업데이트
-
-1. 이미지 재빌드 및 ECR 푸시
-2. `kustomization.yaml`의 `newTag` 갱신
-3. Git 커밋 및 푸시
-4. Argo CD 자동 동기화
-
----
-
-## 운영 전 준비 항목
-
-### Terraform
-
-- `terraform.tfvars`의 비밀번호와 변수 값 확인
-- backend 설정에서 S3 버킷, DynamoDB 테이블, key 확인
-- Phase 1과 Phase 2를 분리해서 실행
-
-### Kubernetes
-
-- `k8s/base`의 Deployment와 Service 포트 일치 확인
-- `k8s/overlays/prod/kustomization.yaml`의 ECR URI 및 태그 확인
-- `secret.yaml`은 Git에 커밋하지 않고 `kubectl create secret`로 주입
-
-### Argo CD
-
-- `argocd/application.yaml`의 `repoURL`과 `path` 확인
-- GitHub repo 연결 방식 확인
-- 자동 동기화 정책 여부 확인
-
----
-
-## 배포 전 체크포인트
-
-- ECR 이미지가 정상적으로 푸시되었는가
-- `kustomization.yaml`의 `images` 항목이 최신 SHA를 가리키는가
-- Argo CD Application이 `Synced` 상태인가
-- Pod가 `Running` 상태인가
-- Backend가 RDS에 연결되는가
-- Frontend가 Backend API에 연결되는가
-- AI 서비스가 Backend와 통신하는가
-
----
-
-## 로컬 개발 참고
-
-이 저장소는 로컬 개발용으로도 사용할 수 있습니다.
-
-- `docker-compose.yml`로 서비스 간 통합 테스트 가능
-- 각 서비스는 개별 Docker 이미지로 빌드 가능
-- 서비스가 완성되면 로컬에서 먼저 기동 확인 후 EKS 배포로 넘어가는 것을 권장합니다.
-
----
-
-## 관련 문서
-
-- [md/DEPLOY.md](md/DEPLOY.md)
-- [md/DEPLOYMENT_CHECKLIST.md](md/DEPLOYMENT_CHECKLIST.md)
-- [md/POST_CLONE_SETUP.md](md/POST_CLONE_SETUP.md)
-- [md/AFTER_EKS.md](md/AFTER_EKS.md)
-- [md/infra_guide.md](md/infra_guide.md)
-
----
-
-## 주의사항
-
-- AWS 키, DB 비밀번호, GitHub PAT는 절대 커밋하지 않습니다.
-- `k8s/base/secret.yaml` 같은 민감 정보 파일은 실제 값 없이 관리하거나 Git 추적에서 제외합니다.
-- EKS 생성 전에는 ECR, VPC, Aurora 중심으로 작업하고, EKS와 Argo CD는 배포 시점에 맞춰 생성하는 것이 비용 효율적입니다.
-
----
-
-## 빠른 시작
+## Terraform 빠른 시작
 
 ```bash
 cd medical-service-infra/terraform
@@ -265,4 +111,24 @@ terraform plan
 terraform apply
 ```
 
-배포는 문서 순서대로 진행하면 됩니다.
+리소스 생성 후 **앱 이미지 반영**은 [infra.md](infra.md)의 SSM 배포 절차를 따릅니다.
+
+---
+
+## 운영 전에 확인할 것
+
+- `terraform.tfvars`, `backend.tf` 의 변수·state 백엔드(S3·DynamoDB)
+- EC2 인스턴스 프로파일에 SSM 권한, **PingStatus=Online**
+- 비공개 GHCR: Secrets Manager + EC2 IAM `secretsmanager:GetSecretValue`
+
+---
+
+## 주의사항
+
+- AWS 키, DB 비밀번호, GitHub·GHCR 토큰은 **Git에 올리지 않습니다.**
+- `medical-backend.env`, `medical-ai.env`, `terraform.tfvars` 는 `.gitignore`·팀 정책에 맞게 관리합니다.
+- SSM·CI 로그에 시크릿이 남지 않게 합니다.
+
+---
+
+추후 **EKS·Argo CD** 는 **[EKS_ArgoCD_배포_가이드.md](EKS_ArgoCD_배포_가이드.md)** 순서로 진행할 예정입니다.

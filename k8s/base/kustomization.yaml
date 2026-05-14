@@ -1,27 +1,16 @@
-# Base Kustomization
-# 모든 환경의 공통 Kubernetes 리소스 정의
-# 이 파일의 이미지/설정은 placeholder이고, 실제 값은 overlays에서 오버라이드됨
-
 resources:
-  - configmap.yaml
-  - secret.yaml
-  - redis-service.yaml
-  - redis-deployment.yaml
-  - redis-pvc.yaml
-  - frontend-service.yaml
   - frontend-deployment.yaml
+  - frontend-service.yaml
   - backend-deployment.yaml
+  - backend-service.yaml
   - ai-deployment.yaml
-  - service.yaml
   - ai-service.yaml
   - ingress.yaml
 
-# 이미지 치환 설정
-# overlays/dev와 overlays/prod에서 실제 이미지 주소로 오버라이드됨
 images:
-  - name: medical-service-frontend
-    newTag: "latest"
-  - name: medical-service-backend
-    newTag: "latest"
-  - name: medical-service-ai
-    newTag: "latest"
+  - name: ghcr.io/your-org/medical-service-frontend
+    newTag: latest
+  - name: ghcr.io/your-org/medical-service-backend
+    newTag: latest
+  - name: ghcr.io/your-org/ai-medicare
+    newTag: latest

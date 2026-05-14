@@ -1,9 +1,38 @@
-# Terraform: repository에서 아예 제외
-terraform/
+# --- 비밀·로컬 환경 (GitHub에 올리면 안 됨) ---
+medical-backend.env
+medical-ai.env
+.env
+.env.local
+.env.*.local
 
-# Terraform cache/state files
+# --- Terraform: 민감/로컬 변수 ---
+terraform.tfvars
+terraform.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+override.tf
+override.tf.json
+
+# --- Terraform: state·캐시·로컬 플러그인(소스 .tf 는 커밋) ---
+**/.terraform/
 *.tfstate
 *.tfstate.*
-.terraform/
-.terraform.lock.hcl
-terraform.tfvars
+crash.log
+*.tfplan
+
+# --- 키·인증서 ---
+*.pem
+*.p12
+*.key
+
+# --- EC2 user-data: 스크립트가 생성하는 타임스탬프 복사본만 무시 ---
+# (루트의 .aws-userdata-plain.sh, .aws-userdata-frontend-docker.sh 는 예시로 커밋)
+.aws-userdata-*.sh
+!.aws-userdata-plain.sh
+!.aws-userdata-frontend-docker.sh
+
+# --- OS·에디터 잡파일 ---
+.DS_Store
+Thumbs.db
+*.swp
+*~

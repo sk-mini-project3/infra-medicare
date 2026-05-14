@@ -1,73 +1,45 @@
-# Prod 환경 Kustomization
-# 운영 환경용 설정: ECR 이미지, 안정적인 replica, 운영용 도메인
-
-namespace: medical-service
+namespace: medical-prod
 
 resources:
   - ../../base
 
-# 운영용 ConfigMap 오버라이드
-# 실제 배포 시 BACKEND_API_URL은 ALB/도메인 주소로 업데이트 필요
+generatorOptions:
+  disableNameSuffixHash: true
+
 configMapGenerator:
-  - name: app-config
-    behavior: merge
+  - name: medical-service-config
     literals:
-      - LOG_LEVEL=INFO
-      - AI_BASE_URL=http://ai-service:80
-      - BACKEND_API_URL=http://backend-service:80
-      - NEXT_PUBLIC_API_URL=http://backend-service:80
-      - FRONTEND_API_BASE=http://backend-service:80
-      # 운영 배포 시 실제 Redis 엔드포인트로 변경하세요.
-      # ElastiCache를 쓰면 cache endpoint, K8s Redis를 쓰면 redis-service로 바꾸면 됩니다.
-      - REDIS_HOST=<REDIS_HOST>
+      - NODE_ENV=production
+      - SERVER_PORT=3000
+      - APP_MAIL_DELIVERY=auto
       - REDIS_PORT=6379
+      - NEXT_PUBLIC_API_URL=https://api.example.com
+      - APP_FRONTEND_URL=https://app.example.com
+      - AI_BASE_URL=https://ai.example.com
 
-# 운영용 이미지 설정
-# 실제 ECR 이미지 주소로 변경됨
-# 주의: newTag는 실제 배포 시 GitHub commit SHA 또는 특정 버전으로 업데이트 필요
+secretGenerator:
+  - name: medical-backend-secret
+    envs:
+      - ../../../medical-backend.env
+  - name: medical-ai-secret
+    envs:
+      - ../../../medical-ai.env
+
 images:
-  - name: medical-service-frontend
-    newName: 296336226405.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-frontend
-    newTag: "latest"  # ← 실제 배포 시 GitHub commit SHA로 변경 (예: sha-a1b2c3d4)
-  - name: medical-service-backend
-    newName: 296336226405.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-backend
-    newTag: "latest"  # ← 실제 배포 시 GitHub commit SHA로 변경 (예: sha-e5f6g7h8)
-  - name: medical-service-ai
-    newName: 296336226405.dkr.ecr.ap-northeast-2.amazonaws.com/medical-service-ai
-    newTag: "latest"  # ← 실제 배포 시 GitHub commit SHA로 변경 (예: sha-i9j0k1l2)
+  - name: ghcr.io/your-org/medical-service-frontend
+    newName: ghcr.io/your-org/medical-service-frontend
+    newTag: latest
+  - name: ghcr.io/your-org/medical-service-backend
+    newName: ghcr.io/your-org/medical-service-backend
+    newTag: latest
+  - name: ghcr.io/your-org/ai-medicare
+    newName: ghcr.io/your-org/ai-medicare
+    newTag: latest
 
-# 운영용 리소스 스케일 (고가용성)
 replicas:
-  - name: frontend
+  - name: medical-frontend
     count: 2
-  - name: backend
+  - name: medical-backend
     count: 2
-  - name: ai
+  - name: medical-ai
     count: 2
-
-# Ingress 패치: 운영 환경 도메인 설정
-# 실제 배포 시 YOUR_DOMAIN.com을 ALB 또는 Route53 도메인으로 변경
-patchesStrategicMerge:
-  - apiVersion: networking.k8s.io/v1
-    kind: Ingress
-    metadata:
-      name: medical-ingress
-    spec:
-      rules:
-        - host: "YOUR_DOMAIN.com"  # ← 실제 도메인으로 변경
-          http:
-            paths:
-              - path: /api
-                pathType: Prefix
-                backend:
-                  service:
-                    name: backend-service
-                    port:
-                      number: 80
-              - path: /
-                pathType: Prefix
-                backend:
-                  service:
-                    name: frontend-service
-                    port:
-                      number: 80

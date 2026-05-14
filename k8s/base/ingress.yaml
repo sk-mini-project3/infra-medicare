@@ -3,22 +3,32 @@ kind: Ingress
 metadata:
   name: medical-ingress
   annotations:
-    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80}]'
 spec:
+  ingressClassName: alb
   rules:
     - http:
         paths:
+          - path: /ai
+            pathType: Prefix
+            backend:
+              service:
+                name: medical-ai-svc
+                port:
+                  number: 80
           - path: /api
             pathType: Prefix
             backend:
               service:
-                name: backend-service
+                name: medical-backend-svc
                 port:
                   number: 80
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: frontend-service
+                name: medical-frontend-svc
                 port:
                   number: 80

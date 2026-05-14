@@ -9,10 +9,16 @@ spec:
     repoURL: https://github.com/sk-mini-project3/infra-medicare.git
     targetRevision: main
     path: k8s/overlays/prod
+    # prod overlay의 secretGenerator가 k8s 바깥(레포 루트)의 *.env 를 참조하므로
+    # Kustomize 기본 LoadRestrictionsRootOnly 를 해제해야 Argo CD 빌드가 통과합니다.
+    kustomize:
+      buildOptions: --load-restrictor LoadRestrictionsNone
   destination:
     server: https://kubernetes.default.svc
-    namespace: medical-service
+    namespace: medical-prod
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

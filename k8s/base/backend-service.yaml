@@ -1,11 +1,12 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: backend-service
+  name: medical-backend-svc
 spec:
   selector:
-    app: backend
+    app: medical-backend
   ports:
-    - port: 80
+    - name: http
+      port: 80
       targetPort: 3000
   type: ClusterIP

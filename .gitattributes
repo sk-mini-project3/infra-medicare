@@ -1,0 +1,2 @@
+# Bash must use LF (WSL/Linux); avoid CRLF breaking shebang and `set -o pipefail`
+*.sh text eol=lf
