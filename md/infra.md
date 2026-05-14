@@ -263,9 +263,10 @@ aws elasticache describe-replication-groups \
 
 - **`k8s/`**: EKS에서 쓸 Kustomize 베이스·오버레이.
 - **`argocd/`**: Application 예시.
-- **`md/DEPLOY.md`**, **`md/AFTER_EKS.md`**: EKS 생성·Argo 설치 등 단계형 가이드.
+- **`md/EKS_ArgoCD_배포_가이드.md`**: EKS 클러스터 생성부터 Argo CD 배포까지 순서 가이드.
 
-EKS/Argo로 옮길 때는 이 문서의 EC2·SSM 절차와 병행하지 말고, **타깃 환경을 하나로 정한 뒤** 전환 계획을 잡는 것이 좋습니다.
+모노레포 `mini_project_3`에 별도로 두는 단계형 문서(`CLONE_TO_ARGOCD_DEPLOY.md`, `AFTER_EKS.md` 등)가 있다면 그 경로를 팀 규칙에 맞춰 링크합니다.  
+EKS/Argo로 옮길 때는 이 문서의 EC2·SSM 절차와 **병행하지 말고**, **타깃 환경을 하나로 정한 뒤** 전환 계획을 잡는 것이 좋습니다.
 
 ---
 
@@ -275,4 +276,4 @@ EKS/Argo로 옮길 때는 이 문서의 EC2·SSM 절차와 병행하지 말고, 
 - SSM 출력 로그에 **시크릿이 노출되지 않게** 터미널·이슈 공유 시 주의합니다.
 - `latest` 태그는 편하지만 재현성이 떨어지므로, 안정화 단계에서는 **SHA 또는 의미 있는 버전 태그**를 검토합니다.
 
-같은 프로젝트에서 배포하며 겪은 **이슈와 해결 요약**은 [DEPLOYMENT_ISSUES_AND_RESOLUTIONS.md](DEPLOYMENT_ISSUES_AND_RESOLUTIONS.md)를 참고합니다.
+같은 프로젝트에서 배포하며 겪은 **인프라·배포 이슈와 해결 요약**은 [배포시_문제_해결.md](배포시_문제_해결.md)를, **앱(프론트·백) 연동·환경 변수·CI 스모크**는 [앱_프론트_백엔드_연동_배포_메모.md](앱_프론트_백엔드_연동_배포_메모.md)를 참고합니다.

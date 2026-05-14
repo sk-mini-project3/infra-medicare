@@ -48,7 +48,9 @@
 | 문서 | 내용 |
 | --- | --- |
 | **[infra.md](infra.md)** | 실제 배포 방식 전체(결정 사항, 구성 요소, 절차, 검증, 보안 메모) |
-| **[DEPLOYMENT_ISSUES_AND_RESOLUTIONS.md](DEPLOYMENT_ISSUES_AND_RESOLUTIONS.md)** | 배포 진행 중 겪은 어려움과 해결(채팅·진행 기록 기반) |
+| **[배포시_문제_해결.md](배포시_문제_해결.md)** | 배포·인프라 진행 중 겪은 어려움과 해결(SSM, GHCR, ALB, WebClient 등) |
+| **[앱_프론트_백엔드_연동_배포_메모.md](앱_프론트_백엔드_연동_배포_메모.md)** | 앱 연동 시 자주 틀어지는 환경 변수·API 계약, CI 스모크, E2E 체크 요약 |
+| **[EKS_ArgoCD_배포_가이드.md](EKS_ArgoCD_배포_가이드.md)** | EKS·Argo CD 전환 순서(추후) |
 
 ---
 
@@ -61,7 +63,8 @@ medical-service-infra/
 ├── md/
 │   ├── README.md
 │   ├── infra.md
-│   ├── DEPLOYMENT_ISSUES_AND_RESOLUTIONS.md
+│   ├── 배포시_문제_해결.md
+│   ├── 앱_프론트_백엔드_연동_배포_메모.md
 │   └── EKS_ArgoCD_배포_가이드.md
 ├── medical-backend.env
 ├── medical-ai.env
