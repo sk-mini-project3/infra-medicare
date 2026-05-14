@@ -48,6 +48,7 @@
 | 문서 | 내용 |
 | --- | --- |
 | **[infra.md](infra.md)** | 실제 배포 방식 전체(결정 사항, 구성 요소, 절차, 검증, 보안 메모) |
+| **[DEPLOYMENT_ISSUES_AND_RESOLUTIONS.md](DEPLOYMENT_ISSUES_AND_RESOLUTIONS.md)** | 배포 진행 중 겪은 어려움과 해결(채팅·진행 기록 기반) |
 
 ---
 
@@ -60,6 +61,7 @@ medical-service-infra/
 ├── md/
 │   ├── README.md
 │   ├── infra.md
+│   ├── DEPLOYMENT_ISSUES_AND_RESOLUTIONS.md
 │   └── EKS_ArgoCD_배포_가이드.md
 ├── medical-backend.env
 ├── medical-ai.env

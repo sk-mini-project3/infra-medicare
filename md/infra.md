@@ -101,8 +101,101 @@ flowchart TB
 | 런타임 | **Amazon EC2** + **Docker** |
 | 트래픽 진입 | **Application Load Balancer** + 타깃 그룹(헬스 체크) |
 | 배포 채널 | **AWS Systems Manager**(Run Command). SSH(22) 없이 **HTTPS(443)** 만으로 배포 가능 |
-| 데이터 | Terraform으로 구성한 **Amazon Aurora MySQL**, **ElastiCache for Redis** 등(프로젝트에 적용된 범위) |
+| 데이터 | **Amazon Aurora MySQL** 등은 Terraform 등으로 구성. **Redis** 는 **Amazon ElastiCache for Redis** 를 **AWS CLI**로 생성(서브넷 그룹·보안 그룹·클러스터/복제 그룹)하고, 엔드포인트를 백엔드 `medical-backend.env` 의 Redis 호스트·포트에 반영 |
 | GitOps | **Argo CD + EKS** 는 레포에 자료만 두고 **추후** 진행 |
+
+---
+
+## 1-1. ElastiCache for Redis (AWS CLI로 구성)
+
+Redis는 **RDS(Aurora)와 달리 Terraform이 아니라 AWS CLI**로 리소스를 만들고, 생성된 **기본 엔드포인트(Primary endpoint)** 를 백엔드 환경 변수(예: `REDIS_HOST`, `REDIS_PORT`)에 넣는 방식으로 맞췄습니다. 아래는 **일반적인 순서**이며, 실제로 쓴 **VPC·서브넷·보안 그룹 ID·이름**은 계정에 맞게 바꿉니다. 리전은 다른 절차와 같이 예를 들어 **`ap-northeast-2`** 로 통일합니다.
+
+### 왜 CLI인지
+
+- VPC·RDS 등은 Terraform으로 잡아 두고, Redis만 **콘솔/CLI로 빠르게** 올리거나, 팀에서 **CLI 스크립트로 재현**하기 쉬운 형태로 둔 경우에 해당합니다.
+- ElastiCache는 **서브넷 그룹**(어느 AZ의 서브넷에 노드를 둘지)과 **보안 그룹**(누가 6379로 붙을지)이 맞아야 백엔드 EC2에서 연결됩니다.
+
+### 절차 요약
+
+1. **캐시 서브넷 그룹** — Redis를 올릴 **프라이빗 서브넷** ID를 2개 이상(다른 AZ) 지정하는 것이 일반적입니다.
+2. **보안 그룹** — Redis 전용 SG를 만들거나 기존 SG를 쓰고, **인바운드 TCP 6379** 를 **백엔드 EC2에 붙은 보안 그룹**에서만 허용합니다(인터넷에서 직접 Redis로 오지 않게).
+3. **복제 그룹(Replication group)** 또는 **단일 캐시 클러스터** — 엔진 `redis`, 노드 타입·버전·이름을 지정해 생성합니다.
+4. **엔드포인트 확인** — `describe-replication-groups`(또는 `describe-cache-clusters`)로 **주소**를 확인해 `medical-backend.env` 에 반영합니다.
+5. **배포** — SSM으로 백엔드 컨테이너를 다시 올려 env가 반영되게 합니다.
+
+### 1) 캐시 서브넷 그룹 생성
+
+```bash
+aws elasticache create-cache-subnet-group \
+  --region ap-northeast-2 \
+  --cache-subnet-group-name medicare-redis-subnet \
+  --cache-subnet-group-description "Private subnets for Redis" \
+  --subnet-ids subnet-aaaaaaaa subnet-bbbbbbbb
+```
+
+이미 있다면 `describe-cache-subnet-groups` 로 이름·서브넷을 확인만 하면 됩니다.
+
+### 2) 보안 그룹(예: Redis 전용) 및 인바운드
+
+Redis용 SG를 새로 만들었다면, **백엔드 EC2가 사용하는 SG**(`sg-backend` 등)에서 오는 **6379** 만 허용합니다.
+
+```bash
+# 예: Redis SG 생성 (VPC는 백엔드와 동일)
+aws ec2 create-security-group \
+  --region ap-northeast-2 \
+  --group-name medicare-redis-sg \
+  --description "ElastiCache Redis" \
+  --vpc-id vpc-xxxxxxxx
+
+# 백엔드 EC2 SG -> Redis SG, 6379
+aws ec2 authorize-security-group-ingress \
+  --region ap-northeast-2 \
+  --group-id sg-redisxxxxxxxx \
+  --protocol tcp \
+  --port 6379 \
+  --source-group sg-backendxxxxxxxx
+```
+
+### 3) 복제 그룹 생성 예시 (Redis, 클러스터 모드 비활성화)
+
+노드 개수·타입·버전은 비용·가용성 정책에 맞게 조정합니다. **Transit encryption** 을 켜면 애플리케이션에서 TLS 연결이 필요하므로, 처음에는 끈 구성으로 올린 뒤 필요 시 켜는 편이 단순합니다.
+
+```bash
+aws elasticache create-replication-group \
+  --region ap-northeast-2 \
+  --replication-group-id medicare-redis \
+  --replication-group-description "Backend Redis" \
+  --engine redis \
+  --engine-version "7.1" \
+  --cache-node-type cache.t4g.micro \
+  --num-cache-clusters 2 \
+  --cache-subnet-group-name medicare-redis-subnet \
+  --security-group-ids sg-redisxxxxxxxx \
+  --at-rest-encryption-enabled
+```
+
+`--transit-encryption-enabled` 를 켜지 않으면(기본적으로 끄거나 명시하지 않으면) 앱은 일반 TCP로 6379에 붙으면 됩니다. 전송 구간 암호화를 켠 경우에는 Spring 등에서 **TLS Redis URL** 설정이 필요합니다.
+
+단일 노드만 필요하면 `create-cache-cluster` 로 `cache-cluster-id`, 동일한 서브넷 그룹·SG를 지정하는 방식도 가능합니다.
+
+### 4) 엔드포인트 확인 후 env 반영
+
+복제 그룹인 경우 **Primary endpoint** 주소를 씁니다.
+
+```bash
+aws elasticache describe-replication-groups \
+  --region ap-northeast-2 \
+  --replication-group-id medicare-redis \
+  --query "ReplicationGroups[0].NodeGroups[0].PrimaryEndpoint.{Address:Address,Port:Port}" \
+  --output table
+```
+
+나온 **Address**·**Port**(보통 `6379`)를 `medical-backend.env` 의 Redis 관련 항목에 넣고, **비밀번호(Auth token)** 를 썼다면 같은 파일·Secrets Manager 정책을 맞춥니다.
+
+### 5) 연결 확인 시 참고
+
+- Redis SG에 **백엔드 EC2의 SG**가 아니라 다른 대역만 열려 있으면 **타임아웃**이 납니다. RDS와 마찬가지로 **같은 VPC 안에서 SG 기준 허용**이 맞는지 다시 확인합니다.
+- 생성 직후 `creating` 상태가 길 수 있으므로, `describe-replication-groups` 의 **Status** 가 `available` 이 된 뒤 백엔드를 재기동합니다.
 
 ---
 
@@ -181,3 +274,5 @@ EKS/Argo로 옮길 때는 이 문서의 EC2·SSM 절차와 병행하지 말고, 
 - GHCR 토큰·DB 비밀번호는 **Git에 올리지 않고** Secrets Manager 또는 안전한 채널로만 배포합니다.
 - SSM 출력 로그에 **시크릿이 노출되지 않게** 터미널·이슈 공유 시 주의합니다.
 - `latest` 태그는 편하지만 재현성이 떨어지므로, 안정화 단계에서는 **SHA 또는 의미 있는 버전 태그**를 검토합니다.
+
+같은 프로젝트에서 배포하며 겪은 **이슈와 해결 요약**은 [DEPLOYMENT_ISSUES_AND_RESOLUTIONS.md](DEPLOYMENT_ISSUES_AND_RESOLUTIONS.md)를 참고합니다.
